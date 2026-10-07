@@ -89,7 +89,7 @@ describe('agent loop', () => {
     const llm = new ScriptedLLM().calls([call('list_records', { kind: 'medication' })], 'He takes Metformin.');
     const { agent, runtime } = makeAgent(llm);
     const outcome = await agent.run('what medications is he on');
-    expect(runtime.listRecords).toHaveBeenCalledWith('medication', undefined);
+    expect(runtime.listRecords).toHaveBeenCalledWith('medication', undefined, undefined, undefined);
     expect(outcome.reply).toBe('He takes Metformin.');
     expect(llm.lastToolResults()).toEqual([{ name: 'list_records', ok: true, message: '2 medications.', data: [{ id: 'med-1', label: 'Metformin' }] }]);
     // The model saw the CONTEXT block and the utterance.

@@ -1,17 +1,17 @@
 /**
- * Where the AI runs — the top-level switch:
+ * Where the AI can run — the bridge's side of Configuration → Models. Any of three providers may be on at
+ * once, and each agent picks its model from the ones that are (Configuration → Agents):
  *
- *   local       speech recognition (Omi Med STT) and the language model (Qwen, local Ollama) on this computer
- *   remote      both on a remote GPU server (python/kaggle/careflow_gpu_server.py, e.g. a Kaggle T4)
- *   openrouter  the language model is a cloud GPT model on OpenRouter; speech recognition stays on this
- *               computer (OpenRouter has no speech recognition)
+ *   local       This Computer: Qwen in the local Ollama (the only use of Ollama) + Omi Med STT on this CPU
+ *   kaggle      the Kaggle GPU (python/kaggle/careflow_gpu_server.py): Qwen 4B / 9B served by vLLM, and
+ *               Whisper or Omi Med STT
+ *   openrouter  a cloud model on OpenRouter (no speech recognition: the microphone is heard on Kaggle)
  *
- * The bridge switches the speech engine and forwards the language model — `/ollama` for this computer or
- * the remote GPU, `/openrouter` for OpenRouter (the bridge adds the API key; the browser never holds it).
+ * The bridge moves speech recognition and forwards the language models — `/vllm` to Kaggle, `/openrouter`
+ * to OpenRouter (the bridge adds the keys; the browser never holds them). This computer's Ollama is called
+ * directly.
  */
-import { getVoiceController } from './voiceController';
-import { aiConfig, bridgeHttpUrl, effectiveConfig, getAIOverride, setAIOverride } from './config';
-import { unloadOllamaModel } from './modelCatalog';
+import { bridgeHttpUrl, effectiveConfig, type ModelSource } from './config';
 
 /** Where the language model runs: this computer, the Kaggle GPU, or OpenRouter. */
 export type ComputeMode = 'local' | 'remote' | 'openrouter';
@@ -19,10 +19,12 @@ export type ComputeMode = 'local' | 'remote' | 'openrouter';
 export type SpeechPlace = 'local' | 'remote';
 export type RemoteSpeech = 'whisper' | 'omi';
 
-/** The language models the Kaggle notebook installs — the provider picks one while the AI runs there. */
+/** The language models the Kaggle notebook serves (Ollama): each agent picks one in Configuration → Agents. */
 export const REMOTE_LLMS = [
-  { name: 'qwen3.5:4b', hint: 'faster replies' },
-  { name: 'qwen3.5:9b', hint: 'better at long, many-part requests; slower' },
+  { name: 'qwen3.5:9b', hint: 'tool calling — every agent' },
+  { name: 'ternary-bonsai-2-27b', hint: 'Ternary Bonsai 2 27B — summaries (T4 x2, PrismML llama-server)' },
+  { name: 'hf.co/unsloth/medgemma-4b-it-GGUF:Q4_K_M', hint: 'MedGemma 4B — medical text, no tool calling' },
+  { name: 'hf.co/mradermacher/Qwen3Guard-Gen-4B-GGUF:Q4_K_M', hint: 'Qwen3Guard 4B — safety classifier, no tool calling' },
 ] as const;
 
 /**
@@ -30,6 +32,7 @@ export const REMOTE_LLMS = [
  * default: the strongest of the three at a price that suits one call per step of every request.
  */
 export const OPENROUTER_LLMS = [
+  { name: 'deepseek/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', hint: 'the default — fast, cheap, calls tools' },
   { name: 'openai/gpt-6-sol', label: 'GPT-6 Sol', hint: 'recommended — accurate with many tools and long requests · $2 / $10 per million tokens' },
   { name: 'openai/gpt-6-luna', label: 'GPT-6 Luna', hint: 'fastest and cheapest · $0.10 / $0.50 per million tokens' },
   { name: 'openai/gpt-6-astra', label: 'GPT-6 Astra', hint: 'the most capable, and the most expensive · $10 / $50 per million tokens' },
@@ -94,6 +97,17 @@ export async function listOpenRouterModels(): Promise<OpenRouterModel[]> {
   return [...picks, ...rest];
 }
 
+/** The Kaggle server's language model runtime: vLLM and the model names it serves. */
+export interface RemoteLlm {
+  ok: boolean;
+  engine?: string;
+  models?: string[];
+  error?: string;
+}
+
+/** What the remote server serves (`ollama`: a server from before vLLM — the bridge no longer uses it). */
+export const remoteLlmOf = (remote: ComputeStatus['remote'] | undefined): RemoteLlm | undefined => remote?.llm;
+
 export interface ComputeStatus {
   mode: ComputeMode;
   /** Where speech recognition runs (a bridge from before this setting leaves it out). */
@@ -102,7 +116,9 @@ export interface ComputeStatus {
   /** The speech model on the remote server: whisper (best with non-US accents) or omi. */
   remote_engine?: RemoteSpeech;
   has_key: boolean;
-  remote: { ok?: boolean; error?: string; model?: string; device?: string; gpu?: string | null; engines?: Record<string, { model: string; device: string }>; ollama?: { ok: boolean; models?: string[]; error?: string } } | null;
+  /** The providers that are on (a bridge from before they could be combined leaves it out). */
+  providers?: ModelSource[];
+  remote: { ok?: boolean; error?: string; model?: string; device?: string; gpu?: string | null; engines?: Record<string, { model: string; device: string }>; llm?: RemoteLlm; ollama?: RemoteLlm } | null;
   /** An OpenRouter key is saved in the bridge (the key itself never comes back). */
   has_openrouter_key?: boolean;
   openrouter_model?: string;
@@ -110,24 +126,6 @@ export interface ComputeStatus {
   stt: { engine: string; ready: boolean; error?: string | null };
 }
 
-const LOCAL_LLM_URL_KEY = 'careflow.compute.localLlmUrl';
-/** The model this computer ran before switching away — it comes back with "This computer". */
-const LOCAL_LLM_MODEL_KEY = 'careflow.compute.localLlmModel';
-
-const remember = (key: string, value: string) => {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* private mode: the defaults are used on the way back */
-  }
-};
-const recall = (key: string): string | null => {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-};
 const trimSlash = (u: string) => u.replace(/\/$/, '');
 
 async function call(url: string, init?: RequestInit): Promise<ComputeStatus> {
@@ -158,86 +156,24 @@ export async function checkKaggle(url: string, key: string): Promise<KaggleHealt
   return (await res.json()) as KaggleHealth;
 }
 
-/** The app's language model address for a mode: the bridge's proxies away from home, the local Ollama otherwise. */
-export function llmUrlFor(mode: ComputeMode): string {
-  if (mode === 'remote') return `${bridge()}/ollama`;
-  if (mode === 'openrouter') return `${bridge()}/openrouter/api`;
-  return recall(LOCAL_LLM_URL_KEY) || aiConfig.llm.apiUrl;
-}
-
-/** The language model is not this computer's own: it goes through one of the bridge's proxies. */
-const isAway = (apiUrl: string) => apiUrl.endsWith('/ollama') || apiUrl.endsWith('/openrouter/api');
-
-/**
- * Move the models. The bridge checks the new place first (the remote server's key, speech model and
- * Ollama; or OpenRouter's key) before anything switches; then the language model is pointed there and,
- * where it runs on a GPU of ours, loaded and its cache primed. Resolves with the new status and, when the
- * language model could not be loaded, why.
- */
-export async function switchCompute(
-  mode: ComputeMode,
-  remote?: { url: string; key: string; speech?: RemoteSpeech; model?: string },
-  openrouter?: { key: string; model: string },
-  /** Where speech recognition runs; left out, it goes with the language model (Kaggle ↔ Kaggle, else here). */
-  speechPlace?: SpeechPlace,
-): Promise<{ status: ComputeStatus; problem: string | null }> {
-  const status = await call(`${bridge()}/api/config/compute`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      mode,
-      speech: speechPlace ?? (mode === 'remote' ? 'remote' : 'local'),
-      remote_url: remote?.url ?? '',
-      remote_key: remote?.key ?? '',
-      remote_engine: remote?.speech ?? 'whisper',
-      openrouter_key: openrouter?.key ?? '',
-      openrouter_model: openrouter?.model ?? '',
-    }),
-  });
-  const llm = effectiveConfig().llm;
-  const wasAway = isAway(llm.apiUrl);
-  if (mode !== 'local' && !wasAway) {
-    remember(LOCAL_LLM_URL_KEY, llm.apiUrl);
-    remember(LOCAL_LLM_MODEL_KEY, llm.model);
-    // The local GPU is not needed any more: free it.
-    if (llm.provider === 'ollama') await unloadOllamaModel(llm.apiUrl, llm.model).catch(() => undefined);
-  }
-  if (mode === 'openrouter') {
-    const model = openrouter?.model || status.openrouter_model || DEFAULT_OPENROUTER_LLM;
-    setAIOverride({ ...getAIOverride(), llm: { ...llm, provider: 'openai-compatible', apiUrl: llmUrlFor('openrouter'), model } });
-    const controller = getVoiceController();
-    controller.reconfigure();
-    return { status, problem: await controller.warmUp() };
-  }
-  // Remote: the model the provider picked there. Back home: the model this computer ran before.
-  const fromCloud = llm.provider === 'openai-compatible' && llm.apiUrl.endsWith('/openrouter/api');
-  const model =
-    mode === 'remote'
-      ? (remote?.model ?? (fromCloud ? REMOTE_LLMS[0].name : llm.model))
-      : wasAway
-        ? (recall(LOCAL_LLM_MODEL_KEY) ?? aiConfig.llm.model)
-        : llm.model;
-  const models = status.remote?.ollama?.models ?? [];
-  if (mode === 'remote' && models.length && !models.includes(model)) {
-    return { status, problem: `The remote server does not have ${model} (it has ${models.join(', ')}). Run the updated careflow_kaggle.ipynb, or "ollama pull ${model}" there.` };
-  }
-  setAIOverride({ ...getAIOverride(), llm: { ...llm, provider: 'ollama', apiUrl: llmUrlFor(mode), model } });
-  const controller = getVoiceController();
-  controller.reconfigure();
-  const problem = await controller.warmUp();
-  return { status, problem };
+/** What the bridge is told when the Models configuration is applied. Empty keys keep the saved ones. */
+export interface ModelSetup {
+  /** Where the MAIN model runs (the master agent's): local | remote (Kaggle) | openrouter. */
+  mode: ComputeMode;
+  /** Every provider that is on: its models are offered to the agents, and the bridge forwards to it. */
+  providers: ModelSource[];
+  /** Where the microphone is heard: this computer, or the Kaggle server. */
+  speech: SpeechPlace;
+  remote_url: string;
+  remote_key: string;
+  remote_engine: RemoteSpeech;
+  openrouter_key: string;
+  openrouter_model: string;
 }
 
 /**
- * While the AI runs remotely: change only the language model there (qwen3.5:4b ↔ qwen3.5:9b). Speech
- * recognition is untouched; the old model is unloaded so the GPU holds one language model at a time.
+ * Apply the Models configuration on the bridge. It checks every part first — the Kaggle server (and its
+ * vLLM, when Kaggle's Qwen is on), the OpenRouter key — and changes nothing unless all of it holds.
  */
-export async function switchRemoteModel(model: string): Promise<string | null> {
-  const llm = effectiveConfig().llm;
-  if (llm.model === model) return null;
-  await unloadOllamaModel(llm.apiUrl, llm.model).catch(() => undefined);
-  setAIOverride({ ...getAIOverride(), llm: { ...llm, model } });
-  const controller = getVoiceController();
-  controller.reconfigure();
-  return controller.warmUp();
-}
+export const saveModelSetup = (setup: ModelSetup) =>
+  call(`${bridge()}/api/config/compute`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(setup) });

@@ -83,6 +83,8 @@ export interface PendingConfirmation {
   description: string;
   recordKind?: AIRecordKind;
   recordId?: string;
+  /** Delete ALL of a patient's records of one kind: every id, deleted together on one confirmation. */
+  recordIds?: string[];
   /** Inbox items to file or unfile (kind 'inbox_file'). */
   inboxItemIds?: string[];
   /** True to file, false to move back to unfiled (kind 'inbox_file'). */
@@ -95,14 +97,123 @@ export interface PendingConfirmation {
  */
 export interface PlanStep {
   text: string;
-  /** 'waiting' = done, and it left a question or a confirmation for the provider. */
-  status: 'pending' | 'running' | 'done' | 'waiting';
+  /**
+   * 'waiting' = done, and it left a question or a confirmation for the provider. 'failed' / 'cancelled':
+   * multi-agent mode only — the task could not be done, or was dropped (the provider said no, or what it
+   * needed failed).
+   */
+  status: 'pending' | 'running' | 'done' | 'waiting' | 'failed' | 'cancelled';
+  /** Multi-agent mode: the task this step shows, and the specialist carrying it out. */
+  taskId?: string;
+  agent?: AgentName;
+}
+
+/** Where a step ran, in multi-agent mode: the master, the Planning Agent, or a specialist carrying out a task. */
+export interface StepOrigin {
+  agent?: 'master' | 'planning' | AgentName;
+  taskId?: string;
+}
+
+/**
+ * What the Safety Agent did with one value of a tool call: removed it (nobody said it), corrected it from
+ * what was said, or asked the provider for it instead of running the call.
+ */
+export interface SafetyFinding {
+  tool: string;
+  /** "medication 1 · dosage", "patient", "text" … */
+  field: string;
+  value: string;
+  action: 'removed' | 'corrected' | 'asked';
+  reason: string;
+  /** The value it was corrected to, from the provider's own words. */
+  corrected?: string;
 }
 
 /** One step of an agent turn, for the trace and the debug panel. */
 export type AgentStep =
-  | { id: string; type: 'model'; startedAt: number; finishedAt?: number; content?: string; toolCalls?: ToolCall[]; error?: string }
-  | { id: string; type: 'tool'; startedAt: number; finishedAt?: number; call: ToolCall; result?: ToolResult };
+  | ({ id: string; type: 'model'; startedAt: number; finishedAt?: number; content?: string; toolCalls?: ToolCall[]; error?: string } & StepOrigin)
+  | ({ id: string; type: 'tool'; startedAt: number; finishedAt?: number; call: ToolCall; result?: ToolResult; safety?: SafetyFinding[] } & StepOrigin);
+
+// ------------------------------------------------------------------ multi-agent mode
+
+/** The specialists of the multi-agent mode (services/ai/agents) — one Agent Skill each (src/agents). */
+export type AgentName =
+  | 'patients'
+  | 'dashboard'
+  | 'appointments'
+  | 'patient_appointments'
+  | 'medications'
+  | 'diagnoses'
+  | 'tasks'
+  | 'recalls'
+  | 'notes'
+  | 'summary'
+  | 'inbox';
+
+/**
+ * How a task may be scheduled. READ_ONLY: reads only — may run beside other read-only tasks. CONTEXT:
+ * changes what is on screen or selected (page, patient, open form) — one at a time. WRITE: creates,
+ * changes, deletes, files, schedules or cancels — one at a time, through the runtime's confirmation.
+ */
+export type ExecutionType = 'READ_ONLY' | 'CONTEXT' | 'WRITE';
+
+export type TaskStatus = 'PENDING' | 'ASSIGNED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'WAITING_FOR_USER' | 'CANCELLED';
+
+/** What a finished task hands to the tasks that depend on it — structured, never only prose. */
+export interface TaskResultData {
+  /** The selected patient once the task was done (a task that found or selected one). */
+  patientId?: string;
+  patientName?: string;
+  /** The data of the task's last successful tool call, trimmed. */
+  data?: unknown;
+  /** What the specialist said. */
+  reply?: string;
+}
+
+/** One task of the master's task graph. */
+export interface AgentTask {
+  id: string;
+  agent: AgentName;
+  instruction: string;
+  dependsOn: string[];
+  executionType: ExecutionType;
+  status: TaskStatus;
+  result?: TaskResultData;
+  error?: string;
+  retryCount: number;
+  /** Agents that already had the task (a reassigned task lists where it was before). */
+  triedAgents?: AgentName[];
+  /** What the provider is being asked (a question or a confirmation), while WAITING_FOR_USER. */
+  waitingFor?: string;
+  /** The execution type the master gave, when the scheduler had to make it stricter. */
+  declaredType?: ExecutionType;
+  /** The model the specialist ran it on (Configuration → Agents), e.g. "vllm:qwen3.5:9b". */
+  model?: string;
+  /**
+   * What the Planning Agent gathered for it and the Safety Agent approved ("medication 1: medicationName =
+   * Metformin, dosage = 500 mg") — the specialist uses exactly these.
+   */
+  requirements?: string[];
+  /** A task split off this one by the Planning Agent, running beside it (its records join the same care plan). */
+  splitFrom?: string;
+  /**
+   * Its records were added to another task's open care plan: that task's confirmation saves them too, and
+   * this one finishes with it.
+   */
+  joinedInto?: string;
+}
+
+/** The authoritative task graph of a request, as the assistant panel and the debug panel show it. */
+export interface TaskGraphSnapshot {
+  id: string;
+  /** What the provider said. */
+  request: string;
+  /** 'fast': one task, routed by the master with no planning; 'planned': a task graph. */
+  route: 'fast' | 'planned';
+  tasks: AgentTask[];
+  createdAt: number;
+  finishedAt?: number;
+}
 
 export interface DebugTrace {
   transcript: string;
@@ -110,6 +221,8 @@ export interface DebugTrace {
   /** The CONTEXT block the model received with the utterance. */
   context: string;
   steps: AgentStep[];
+  /** Multi-agent mode: the task graph the request ran as. */
+  graph?: TaskGraphSnapshot;
   reply?: string;
   fieldsModified: Array<{ formId: string; field: string; value: string }>;
   startedAt: number;

@@ -31,10 +31,10 @@ interface Props {
   item?: InboxItem;
   patient?: Patient;
   /** Only the patient being worked on can have records written to them. */
-  isCurrentPatient: boolean;
+
   unfiledCount: number;
   /** Make this item's patient the one being worked on. */
-  onSelectPatient?: () => void;
+
 }
 
 /** Card values, keyed by suggestion id then field key. */
@@ -51,9 +51,10 @@ const initialValues = (suggestions: InboxSuggestion[]): Values =>
  * edit for the rest of the fields, or open the full form. All three end in the
  * same record; nothing is written until one of them is confirmed.
  */
-export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, onSelectPatient }: Props) {
+export function InboxAiPanel({ item, patient, unfiledCount }: Props) {
   const dispatch = useAppDispatch();
-  const overview = usePatientOverview();
+  // The item's own patient — records are added for them, whoever is selected elsewhere.
+  const overview = usePatientOverview(patient?.id ?? null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<string | null>(null);
   const [values, setValues] = useState<Values>({});
@@ -71,7 +72,7 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, on
 
   const narrative = useMemo(
     () =>
-      patient && isCurrentPatient
+      patient
         ? buildPatientNarrative({
             patient,
             medications: overview.medications,
@@ -81,7 +82,7 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, on
             appointments: overview.appointments,
           })
         : null,
-    [patient, isCurrentPatient, overview],
+    [patient, overview],
   );
 
   if (!item) {
@@ -212,14 +213,9 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, on
       </div>
       {unfiledCount > 0 && <p className="ibx-ai-sub">Nothing is saved until you press Add. {unfiledCount} unfiled in this list.</p>}
 
-      {!isCurrentPatient && (
+      {!patient && (
         <div className="ibx-ai-gate">
-          <p>Select {item.patientName} to add to their record — everything is saved against the patient you are working on.</p>
-          {onSelectPatient && item.patientId && (
-            <Button size="small" type="primary" ghost icon={<UserRound size={13} />} onClick={onSelectPatient}>
-              Select patient
-            </Button>
-          )}
+          <p>This item is not linked to a patient record, so nothing can be added from it.</p>
         </div>
       )}
 
@@ -231,7 +227,7 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, on
           const secondary = s.fields.find((f) => f.secondary);
           const rest = s.fields.filter((f) => !f.primary && !f.secondary);
           const missing = missingFor(s);
-          const blocked = s.kind !== 'email' && !isCurrentPatient;
+          const blocked = s.kind !== 'email' && !patient;
           const ready = missing.length === 0;
 
           // The collapsed row says what would be added, or what is still needed.

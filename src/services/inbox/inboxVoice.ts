@@ -35,6 +35,11 @@ export interface InboxVoiceController {
   /** The page's own filing handler — same toast, same Undo. */
   file(ids: string[], file: boolean): void;
   setPatientScope(patientId: string | null): void;
+  /**
+   * Show exactly these records (a summary of "all normal records"): every other filter cleared, then these —
+   * Normal / Abnormal, filed / unfiled, only those needing attention.
+   */
+  showOnly(filter: { status?: 'Normal' | 'Abnormal'; filed?: 'all' | 'filed' | 'unfiled'; attention?: boolean }): void;
 }
 
 type Listener = () => void;

@@ -10,6 +10,7 @@ import {
   Keyboard,
   Loader2,
   MessageCircleQuestion,
+  Minus,
   Mic,
   MicOff,
   Send,
@@ -22,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { voiceActions, type VoiceStatus } from '@/store/slices/voiceSlice';
+import { AGENT_TITLES } from '@/services/ai/agents/taskGraph';
 import { uiActions } from '@/store/slices/uiSlice';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { aiConfig } from '@/services/ai/config';
@@ -174,7 +176,9 @@ export function VoiceAssistant() {
             {showLoading && (
               <div className="voice-model-note">
                 {voice.model.status === 'loading'
-                  ? `Loading ${modelName} into memory · ${preparingFor} s — this happens after starting the computer or switching models (about 1–2 minutes on this GPU). After that, requests take a few seconds.`
+                  ? voice.llmProvider.startsWith('vllm:')
+                    ? `Loading ${modelName} into the GPU's memory · ${preparingFor} s — after the notebook starts or the model changes this takes 1–3 minutes; a load that gets stuck is restarted by the server on its own. After that, requests take a few seconds.`
+                    : `Loading ${modelName} into memory · ${preparingFor} s — this happens after starting the computer or switching models (about 1–2 minutes on this GPU). After that, requests take a few seconds.`
                   : `Preparing ${modelName} · ${preparingFor} s — it is reading the assistant's instructions again (after an app update this takes 1–2 minutes). After that, requests take a few seconds.`}
               </div>
             )}
@@ -234,9 +238,24 @@ export function VoiceAssistant() {
                       {voice.plan.map((s, i) => (
                         <li key={i} className={`is-${s.status}`}>
                           <span className="va-plan-mark" aria-hidden>
-                            {s.status === 'running' ? <Loader2 size={13} className="spin" /> : s.status === 'done' ? <Check size={13} /> : s.status === 'waiting' ? <AlertCircle size={13} /> : i + 1}
+                            {s.status === 'running' ? (
+                              <Loader2 size={13} className="spin" />
+                            ) : s.status === 'done' ? (
+                              <Check size={13} />
+                            ) : s.status === 'waiting' ? (
+                              <AlertCircle size={13} />
+                            ) : s.status === 'failed' ? (
+                              <X size={13} />
+                            ) : s.status === 'cancelled' ? (
+                              <Minus size={13} />
+                            ) : (
+                              i + 1
+                            )}
                           </span>
-                          <span>{s.text}</span>
+                          <span>
+                            {s.text}
+                            {s.agent && <span className="va-plan-agent">{AGENT_TITLES[s.agent]}</span>}
+                          </span>
                         </li>
                       ))}
                     </ol>

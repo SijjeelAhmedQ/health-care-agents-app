@@ -1,0 +1,27 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "summary",
+  "agent": "summary",
+  "name": "Summary Agent",
+  "skill": "src/agents/summary-agent/SKILL.md",
+  "version": "2.1",
+  "role": "summary-writer",
+  "description": "CareFlow's Summary Agent. Writes every kind of summary — the dashboard (the provider's day), Inbox records (normal, abnormal, needing attention, unfiled; any category, one patient's or every patient's), any page or sidebar option, a patient's chart or one kind of their records. It only summarizes: it changes nothing and calls no tools, so it runs on any model, MedGemma included. The app gathers the data; the summary opens in the Summary panel. Use for \"summarize all inbox normal records\", \"give me a summary of my day\", \"summarize this page\", \"summarize Tom Baker's medications\".",
+  "toolSummary": {
+    "total": 0,
+    "mutating": 0,
+    "screenOnly": 0,
+    "readOnly": 0,
+    "reports": 0,
+    "mutatingTools": []
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": []
+}

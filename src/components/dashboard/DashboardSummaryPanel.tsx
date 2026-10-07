@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import { Button, Tooltip } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { CalendarClock, CalendarDays, Inbox, ListChecks, Repeat, Sparkles, TriangleAlert, Volume2, X } from 'lucide-react';
@@ -7,25 +7,13 @@ import { useAppDispatch } from '@/store';
 import { uiActions } from '@/store/slices/uiSlice';
 import { setCurrentPatient } from '@/store/slices/patientSlice';
 import { useProviderWorkload } from '@/hooks/useProviderData';
+import { useDockWidth } from '@/hooks/useDockWidth';
 import { buildProviderNarrative } from '@/services/provider/providerNarrative';
 import { speak } from '@/services/ai/speech';
 import { Avatar, InlineEmpty, StatusTag } from '@/components/common';
 import { PageRegistry } from '@/registry/pageRegistry';
 import { formatDate, formatTime } from '@/utils/format';
 import type { RecordKind } from '@/types/records';
-
-const WIDTH_KEY = 'careflow.dashboardPanel.width';
-const MIN_WIDTH = 320;
-const MAX_WIDTH = 640;
-
-function readWidth() {
-  try {
-    const w = Number(localStorage.getItem(WIDTH_KEY));
-    return w >= MIN_WIDTH && w <= MAX_WIDTH ? w : 380;
-  } catch {
-    return 380;
-  }
-}
 
 /**
  * The provider's dashboard summary, docked to the right of the Dashboard as a
@@ -40,42 +28,7 @@ export function DashboardSummaryPanel() {
   const navigate = useNavigate();
   const { workload, loading } = useProviderWorkload();
   const narrative = useMemo(() => (workload ? buildProviderNarrative(workload) : null), [workload]);
-  const [width, setWidth] = useState(readWidth);
-  const dragging = useRef(false);
-
-  // The page and the header give up exactly the width the panel takes (see .has-right-dock).
-  useEffect(() => {
-    document.documentElement.style.setProperty('--right-dock-width', `${width}px`);
-    return () => {
-      document.documentElement.style.removeProperty('--right-dock-width');
-    };
-  }, [width]);
-
-  const onDrag = useCallback((e: PointerEvent) => {
-    if (!dragging.current) return;
-    setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - e.clientX)));
-  }, []);
-  const endDrag = useCallback(() => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    document.body.classList.remove('is-resizing-dock');
-    setWidth((w) => {
-      try {
-        localStorage.setItem(WIDTH_KEY, String(w));
-      } catch {
-        /* storage unavailable — the width lasts for this page only */
-      }
-      return w;
-    });
-  }, []);
-  useEffect(() => {
-    window.addEventListener('pointermove', onDrag);
-    window.addEventListener('pointerup', endDrag);
-    return () => {
-      window.removeEventListener('pointermove', onDrag);
-      window.removeEventListener('pointerup', endDrag);
-    };
-  }, [onDrag, endDrag]);
+  const { startDrag } = useDockWidth('careflow.dashboardPanel.width');
 
   const close = () => dispatch(uiActions.setDashboardPanelOpen(false));
   const openPatient = (patientId: string, kind: RecordKind) => {
@@ -90,10 +43,7 @@ export function DashboardSummaryPanel() {
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize the summary panel"
-        onPointerDown={() => {
-          dragging.current = true;
-          document.body.classList.add('is-resizing-dock');
-        }}
+        onPointerDown={startDrag}
       />
       <header className="dash-dock-head">
         <span className="dash-dock-mark" aria-hidden>

@@ -250,31 +250,26 @@ describe('inbox module', () => {
     expect(await waitUntil(() => store.getState().inbox.reviewedIds.includes(lab[1].id))).toBe(true);
   }, TIMEOUT);
 
-  it('keeps suggested actions bound to the selected patient', async () => {
+  it('adds to the ITEM\'s patient — whoever is selected elsewhere, or nobody', async () => {
     const items = store.getState().inbox.items;
     const patients = patientSelectors.selectAll(store.getState());
-    // An item that actually raises follow-up, for somebody we are not working on.
     const item = items.find((i) => i.category === 'lab' && i.attention)!;
     const other = patients.find((p) => p.id !== item.patientId)!;
-    store.dispatch(setCurrentPatient(other.id));
-
-    await renderAppAt(`/inbox/lab?item=${encodeURIComponent(item.id)}`, () => pageText().includes('Select patient'));
-
-    expect(pageText()).toContain(`Select ${item.patientName} to add to their record`);
-    for (const label of ['Add medication', 'Add diagnosis', 'Add recall', 'Add task']) {
-      expect(buttonWith(label)?.disabled, `${label} must not be possible for the wrong patient`).toBe(true);
+    await store.dispatch(recordSlices.task.fetchAll()).unwrap();
+    for (const selected of [other.id, null]) {
+      await unmountApp();
+      store.dispatch(setCurrentPatient(selected));
+      await renderAppAt(`/inbox/lab?item=${encodeURIComponent(item.id)}`, () => !!buttonWith('Add task'));
+      // Nothing waits for a patient to be selected.
+      expect(pageText()).not.toContain('to add to their record');
+      for (const label of ['Add medication', 'Add diagnosis', 'Add recall', 'Add task']) expect(buttonWith(label)?.disabled ?? false, label).toBe(false);
+      expect(buttonWith('Clinical summary')?.disabled).toBe(false);
+      // …and what is added is the item's patient's — never the selected one's.
+      const before = recordSlices.task.selectors.selectAll(store.getState()).filter((t) => t.patientId === item.patientId).length;
+      buttonWith('Add task')!.click();
+      expect(await waitUntil(() => recordSlices.task.selectors.selectAll(store.getState()).filter((t) => t.patientId === item.patientId).length === before + 1)).toBe(true);
+      expect(store.getState().patients.currentPatientId).toBe(selected); // the selection is untouched
     }
-
-    buttonWith('Select patient')!.click();
-    expect(await waitUntil(() => store.getState().patients.currentPatientId === item.patientId)).toBe(true);
-    expect(await waitUntil(() => !pageText().includes('to add to their record'))).toBe(true);
-    expect(pageText()).toContain('Current patient');
-    expect(
-      await waitUntil(() => {
-        const button = buttonWith('Add task');
-        return !!button && !button.disabled;
-      }),
-    ).toBe(true);
   }, TIMEOUT);
 
   it('is reachable without a selected patient', async () => {

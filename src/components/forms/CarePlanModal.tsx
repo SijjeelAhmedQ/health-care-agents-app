@@ -173,6 +173,7 @@ export function CarePlanHost() {
     message.success(`${saved} record${saved === 1 ? '' : 's'} saved for ${savedFor.size > 1 ? `${savedFor.size} patients` : [...savedFor][0]}`);
     releaseVoice();
     reset();
+    FormRegistry.settled(CARE_PLAN_FORM_ID, true);
     return saved;
   };
 
@@ -242,6 +243,7 @@ export function CarePlanHost() {
     const done = () => {
       releaseVoice();
       reset();
+      FormRegistry.settled(CARE_PLAN_FORM_ID, false);
     };
     if (saving) return;
     if (!entries.length) return done();

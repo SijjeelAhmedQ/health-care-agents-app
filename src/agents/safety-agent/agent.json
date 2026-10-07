@@ -1,0 +1,74 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "safety",
+  "agent": "safety",
+  "name": "Safety Agent",
+  "skill": "src/agents/safety-agent/SKILL.md",
+  "version": "1.2",
+  "role": "validation",
+  "runtime": "code + model",
+  "description": "CareFlow's Safety Agent — hallucination prevention. Checks every value any agent sends to the app (a drug, dose, frequency, duration, route, diagnosis, task, reason, date, time, patient, provider) against what the provider SAID, the app's own data and the app's own defaults. Keeps what is supported, corrects a value from the provider's own words, removes what nobody said, and asks the provider instead of running a call whose record itself was made up. Never completes a missing value. Use on every tool call that adds, changes or selects, and on what a tool prepared for confirmation.",
+  "toolSummary": {
+    "total": 1,
+    "mutating": 0,
+    "screenOnly": 0,
+    "readOnly": 0,
+    "reports": 1,
+    "mutatingTools": []
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": [
+    {
+      "name": "report_review",
+      "executionType": "REPORT",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "description": "Report whether the CALL does what the provider SAID. ok: true when it does. Otherwise one problem per mismatch, each quoting the provider's exact words that show it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "true when the call does what was said"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "description": "What is wrong, as the call names it: \"medication 2 · dosage\", \"patient\", \"action\""
+                },
+                "quote": {
+                  "type": "string",
+                  "description": "The provider's exact words that show it, copied from SAID"
+                },
+                "issue": {
+                  "type": "string",
+                  "description": "What does not match, in a few words"
+                }
+              },
+              "required": [
+                "field",
+                "quote",
+                "issue"
+              ]
+            }
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      }
+    }
+  ]
+}

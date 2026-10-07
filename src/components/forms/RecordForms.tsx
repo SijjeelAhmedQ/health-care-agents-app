@@ -12,6 +12,7 @@ import type { FieldValues } from '@/types/ai';
 import type { RecordKind } from '@/types/records';
 import type { Appointment, Diagnosis, Medication, Recall, Task } from '@/types/domain';
 import { FieldRegistry } from '@/registry/fieldRegistry';
+import { defaultValues } from '@/registry/recordDefaults';
 import { FormGrid, FormSection } from '@/components/common';
 import { RegisteredFormModal } from './RegisteredForm';
 import { CheckboxField, DateField, NumberField, PatientSelectField, ProviderSelectField, SelectField, TextField, TimeField } from './fields';
@@ -134,20 +135,8 @@ export function recordToFormValues(kind: RecordKind, row: Medication | Diagnosis
 }
 
 /** Fresh-record defaults, so a dictated record is complete enough to save. */
-export function defaultValues(kind: RecordKind, authorName: string): AnyValues {
-  switch (kind) {
-    case 'medication':
-      return { route: 'Oral', startDate: dayjs(), refills: 0, status: 'Active', prescribedBy: authorName };
-    case 'diagnosis':
-      return { status: 'Active', severity: 'Moderate', onsetDate: dayjs(), diagnosedBy: authorName };
-    case 'task':
-      return { category: 'Follow-up', priority: 'Normal', status: 'Open', assignedTo: authorName, dueDate: dayjs().add(7, 'day') };
-    case 'recall':
-      return { type: 'Follow-up', priority: 'Normal', status: 'Due' };
-    case 'appointment':
-      return { type: 'Follow-up', durationMinutes: 30, status: 'Scheduled', priority: 'Routine', locationName: 'Riverside Medical Center', isTelehealth: false };
-  }
-}
+// Shared with the Safety Agent: a value a form opens with is the application's own, not a model's guess.
+export { defaultValues } from '@/registry/recordDefaults';
 
 interface SaveContext {
   patientId: string;
@@ -289,6 +278,8 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   // dispatch calls below monomorphic instead of a five-way thunk union.
   const slice = recordSlices[kind] as (typeof recordSlices)['medication'];
   const authorName = user?.fullName ?? 'Unknown';
+  // An appointment is with the signed-in provider unless another one is named (as in the care plan).
+  const ownProvider = providers.find((p) => p.id === user?.providerId)?.fullName;
   const editing = !!record;
 
   // New records are for the selected patient unless their Patient field is changed (each tab its own).
@@ -297,9 +288,9 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   const defaultRef = defaultPatient ? patientRef(defaultPatient) : undefined;
   const initialValues = useMemo<AnyValues>(() => {
     if (record) return { ...recordToFormValues(kind, record), patient: defaultRef };
-    return { ...defaultValues(kind, authorName), patient: defaultRef, ...toFormInitialValues(kind, prefill) };
+    return { ...defaultValues(kind, authorName), ...(kind === 'appointment' && ownProvider ? { providerName: ownProvider } : {}), patient: defaultRef, ...toFormInitialValues(kind, prefill) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, record, authorName, defaultRef, JSON.stringify(prefill ?? {})]);
+  }, [kind, record, authorName, ownProvider, defaultRef, JSON.stringify(prefill ?? {})]);
 
   // Multi-entry support: "add panadol and metformin" fills one record tab each, saved together after a
   // single review. Records are grouped into numbered main tabs (Tab 1, Tab 2…), one patient per tab —

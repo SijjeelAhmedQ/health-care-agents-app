@@ -19,6 +19,7 @@ import { MobileNav } from './MobileNav';
 import { SelectedPatientBanner } from '@/components/patient/SelectedPatientBanner';
 import { PatientSummaryPanel } from '@/components/patient/PatientSummaryPanel';
 import { DashboardSummaryPanel } from '@/components/dashboard/DashboardSummaryPanel';
+import { SummaryDock } from '@/components/summary/SummaryDock';
 import { VoiceAssistant } from '@/components/voice/VoiceAssistant';
 import { VoiceConfirmDialog } from '@/components/voice/VoiceConfirmDialog';
 import { AssistantHelp } from '@/components/voice/AssistantHelp';
@@ -55,7 +56,9 @@ export function AppLayout() {
   const patientPanelOpen = useAppSelector((s) => s.ui.patientPanelOpen) && hasPatient;
   // The provider's dashboard summary belongs to the Dashboard page and docks beside it.
   const dashboardPanelOpen = useAppSelector((s) => s.ui.dashboardPanelOpen) && PageRegistry.matchPath(location.pathname)?.id === 'dashboard';
-  const rightDock = dashboardPanelOpen ? 'dashboard' : patientPanelOpen ? 'patient' : null;
+  // The Summary Agent's summary docks on any page — the latest one asked for.
+  const summaryPanelOpen = useAppSelector((s) => s.ui.summaryPanelOpen && !!s.ui.summary);
+  const rightDock = summaryPanelOpen ? 'summary' : dashboardPanelOpen ? 'dashboard' : patientPanelOpen ? 'patient' : null;
   const helpOpen = useAppSelector((s) => s.voice.helpOpen);
   usePageTracking();
 
@@ -102,6 +105,7 @@ export function AppLayout() {
         dispatch(voiceActions.setPanelOpen(false));
         dispatch(uiActions.setPatientPanelOpen(false));
         dispatch(uiActions.setDashboardPanelOpen(false));
+        dispatch(uiActions.setSummaryPanelOpen(false));
       }
     };
     window.addEventListener('keydown', handler);
@@ -142,6 +146,7 @@ export function AppLayout() {
           </Suspense>
         </Layout.Content>
       </Layout>
+      {rightDock === 'summary' && <SummaryDock />}
       {rightDock === 'dashboard' && <DashboardSummaryPanel />}
       {rightDock === 'patient' && <PatientSummaryPanel />}
       {isMobile && <MobileNav />}

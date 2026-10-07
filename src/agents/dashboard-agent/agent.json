@@ -1,0 +1,320 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "dashboard",
+  "agent": "dashboard",
+  "name": "Dashboard Agent",
+  "skill": "src/agents/dashboard-agent/SKILL.md",
+  "version": "1.0",
+  "role": "specialist",
+  "description": "CareFlow's Dashboard Agent. The signed-in provider's own day — answers questions about it (workload, today's schedule, the next appointment, open tasks, recalls due, unfiled Inbox items) and shows or hides the Dashboard's own side panel. Never one patient's chart; a written summary of the day is the Summary Agent's. Use for \"how busy am I today\", \"when is my next appointment\", \"open the dashboard panel\".",
+  "toolSummary": {
+    "total": 13,
+    "mutating": 2,
+    "screenOnly": 8,
+    "readOnly": 3,
+    "reports": 0,
+    "mutatingTools": [
+      "save_open_form",
+      "confirm_pending_action"
+    ]
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": [
+    {
+      "name": "get_provider_overview",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "description": "Data about the signed-in provider's own day (appointments today and this week, open tasks, recalls due, unfiled Inbox) to answer a specific question such as \"when is my next appointment\" — answer in one sentence. For a summary or overview of the day use dashboard_summary_panel instead.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "dashboard_summary_panel",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Show (or hide) the summary of the provider's day in the panel on the right of the Dashboard. Use it whenever the provider asks for a summary or overview of their day or dashboard; the summary is shown there, not in your reply.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "open"
+        ]
+      }
+    },
+    {
+      "name": "open_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Open a page or a Summary tab: dashboard (Dashboard), patients (Patients), inbox (Inbox), summary (Summary), my-appointments (My Appointments), configuration (Configuration), summary-ai (AI Summary), summary-medication (Medications), summary-diagnosis (Diagnoses), summary-task (Tasks), summary-recall (Recalls), summary-appointment (Appointments), inbox-all (Inbox — All), inbox-lab (Inbox — Lab), inbox-radiology (Inbox — Radiology), inbox-referral (Inbox — Referrals), inbox-discharge (Inbox — Discharge Summary).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string",
+            "enum": [
+              "dashboard",
+              "patients",
+              "inbox",
+              "summary",
+              "my-appointments",
+              "configuration",
+              "summary-ai",
+              "summary-medication",
+              "summary-diagnosis",
+              "summary-task",
+              "summary-recall",
+              "summary-appointment",
+              "inbox-all",
+              "inbox-lab",
+              "inbox-radiology",
+              "inbox-referral",
+              "inbox-discharge"
+            ],
+            "description": "Page id"
+          }
+        },
+        "required": [
+          "page"
+        ]
+      }
+    },
+    {
+      "name": "go_back",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Go back to the previous screen (in the Inbox: close the open record).",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "scroll_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Scroll the current page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "top",
+              "bottom"
+            ]
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      }
+    },
+    {
+      "name": "control_list",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Search, filter or page the list on screen (see CONTEXT: list on screen), e.g. {\"filter\": \"Status\", \"value\": \"Active\"}, {\"page\": \"next\"}, {\"search\": \"khan\"}, {\"clear\": true}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "search": {
+            "type": "string",
+            "description": "Text to search for; \"\" clears the search"
+          },
+          "filter": {
+            "type": "string",
+            "description": "A filter of the list, by its name"
+          },
+          "value": {
+            "type": "string",
+            "description": "The option to filter by; \"all\" removes that filter"
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Clear the search and every filter"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "next",
+                  "previous",
+                  "first",
+                  "last"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "fill_open_form",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Set fields on the form that is open now (see CONTEXT: open form and its values) — e.g. {\"frequency\": \"Twice daily\"}. Use it to answer a pending question or to change what the form holds. Arguments are the form's own field names, in the same formats as the add_* tools.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "clear_form_field",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Empty one field of the open form.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ]
+      }
+    },
+    {
+      "name": "save_open_form",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user asked to save the open form. If a save is already waiting for their confirmation, this is that confirmation and it saves; otherwise it checks the form and asks them to confirm.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "confirm_pending_action",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Carry out the pending save / delete / filing shown in CONTEXT. Call it ONLY when the user has just said yes / confirm / save / delete it in reply to that pending confirmation — never on your own initiative.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_pending_action",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user said no / cancel / stop: drop the pending confirmation or question and close the open form without saving.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "wait_for_more_speech",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "What was said is an unfinished fragment (cut off mid-sentence). Nothing is done; it is joined with what the user says next.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "not_my_task",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "SAID is not something your tools do (it belongs to another part of the app), or it is not an answer to the pending question or confirmation — hand it back to the master instead of guessing. Never use it for something your tools can do.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "better_agent": {
+            "type": "string",
+            "enum": [
+              "patients",
+              "dashboard",
+              "appointments",
+              "patient_appointments",
+              "medications",
+              "diagnoses",
+              "tasks",
+              "recalls",
+              "notes",
+              "summary",
+              "inbox"
+            ],
+            "description": "The agent it belongs to, if you know: patients, dashboard, appointments, patient_appointments, medications, diagnoses, tasks, recalls, notes, summary, inbox"
+          }
+        }
+      }
+    }
+  ]
+}

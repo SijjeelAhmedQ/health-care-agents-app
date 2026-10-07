@@ -96,6 +96,14 @@
 .ibx-search.ant-input-affix-wrapper-focused { background: var(--color-surface); border-color: var(--color-primary); }
 .ibx-search .ibx-search-icon { color: var(--color-text-muted); }
 .ibx-search kbd { opacity: 0.8; }
+/* Whose records: every patient's unless one is chosen — independent of the patient selected elsewhere. */
+.ibx-patient-filter { flex: 0 1 220px; min-width: 160px; }
+.ibx-patient-filter .ant-select-selector { height: 40px !important; border-radius: 13px !important; align-items: center; }
+.ibx-patient-filter:not(.ant-select-focused) .ant-select-selector { background: var(--color-surface-muted) !important; border-color: transparent !important; }
+.ibx-patient-filter.ant-select-open .ant-select-selector, .ibx-patient-filter .ant-select-selection-item { font-weight: 600; }
+.ibx-patient-filter-ph { display: inline-flex; align-items: center; gap: 6px; color: var(--color-text-secondary); }
+.ibx-patient-option { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ibx-patient-option-mrn { font-size: 12px; color: var(--color-text-muted); }
 .ibx-quick { display: flex; gap: 6px; flex-shrink: 0; }
 .ibx-toggle {
   display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 999px;
@@ -547,7 +555,7 @@
   .ibx-shell.is-reading .ibx-pane-detail { display: block; }
   /* Reading an item: the header steps aside — all but the patient toggle, which never hides. */
   .ibx-head.is-hidden-sm > .ibx-head-text,
-  .ibx-head.is-hidden-sm .ibx-head-stats > :not(.ibx-scope-toggle) { display: none; }
+  .ibx-head.is-hidden-sm .ibx-head-stats { display: none; }
   /* Touch screens have no hover: tick boxes appear once a selection is started from the list header. */
   .ibx-row:hover .ibx-row-check, .ibx-row:focus-within .ibx-row-check { opacity: 0; }
   .ibx-row:hover :is(.ibx-catmark, .ibx-row-unread), .ibx-row:focus-within :is(.ibx-catmark, .ibx-row-unread) { opacity: 1; }
@@ -581,6 +589,7 @@
   .ibx-toolbar { padding: 8px 10px; }
   .ibx-toolbar-row { flex-wrap: wrap; }
   .ibx-search { flex: 1 1 100%; max-width: none; order: 0; }
+  .ibx-patient-filter { flex: 1 1 100%; min-width: 0; order: 0; }
   .ibx-quick { order: 1; }
   .ibx-toolbar-end { order: 2; }
   .ibx-toolbar-end .ant-btn { width: 36px; padding: 0; }

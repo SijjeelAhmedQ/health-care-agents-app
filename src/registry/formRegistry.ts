@@ -43,10 +43,30 @@ export interface FormController {
 
 type Listener = () => void;
 
+/** A form the provider saved (or closed unsaved) with its own buttons — by mouse, not through the assistant. */
+export interface FormSettled {
+  formId: string;
+  saved: boolean;
+}
+
 class FormRegistryImpl {
   private controllers = new Map<string, FormController>();
   private order: string[] = [];
   private listeners = new Set<Listener>();
+  private settledListeners = new Set<(event: FormSettled) => void>();
+
+  /**
+   * The form's own Save / Update, or its Cancel: whatever the assistant left waiting on it (a confirmation, a
+   * question) is settled — the assistant and the task waiting on it carry on, never "waiting" for nothing.
+   */
+  settled(formId: string, saved: boolean) {
+    this.settledListeners.forEach((l) => l({ formId, saved }));
+  }
+
+  onSettled(listener: (event: FormSettled) => void) {
+    this.settledListeners.add(listener);
+    return () => this.settledListeners.delete(listener);
+  }
 
   register(controller: FormController): () => void {
     const key = this.key(controller.formId, controller.instanceKey);

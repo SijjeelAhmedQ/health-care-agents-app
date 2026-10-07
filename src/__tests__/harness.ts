@@ -83,9 +83,10 @@ export async function unmountApp() {
  * Put a scripted model (and a fake microphone) behind the real application's assistant.
  * The test then scripts which tools "the model" calls for each utterance.
  */
-export function useScriptedModel(options: { planSteps?: boolean } = {}): ScriptedLLM {
+export function useScriptedModel(options: { planSteps?: boolean; multiAgent?: boolean } = {}): ScriptedLLM {
   const llm = new ScriptedLLM();
-  getVoiceController().reconfigure({ llm, stt: new FakeMic(), planSteps: options.planSteps });
+  // Multi-agent: tasks one after another, so a single script answers every agent in a known order.
+  getVoiceController().reconfigure({ llm, stt: new FakeMic(), planSteps: options.planSteps, multiAgent: options.multiAgent, parallelReads: options.multiAgent ? false : undefined });
   return llm;
 }
 

@@ -14,6 +14,7 @@ import { categoryMeta, type InboxItem } from '@/services/inbox/inboxModel';
 import type { Patient } from '@/types/domain';
 import { AppModal } from '@/components/common/AppModal';
 import { RecordFormModal, type RecordKind } from '@/components/forms/RecordForms';
+import { patientRef } from '@/services/records/patientRef';
 import { hashColor, initials } from '@/utils/format';
 import { InboxAiPanel } from './InboxAiPanel';
 import { InboxComments } from './InboxComments';
@@ -73,7 +74,8 @@ export function InboxDetail({
   unfiledCount,
 }: Props) {
   const dispatch = useAppDispatch();
-  const overview = usePatientOverview();
+  // The item's own patient: the Inbox never depends on who is selected elsewhere in the app.
+  const overview = usePatientOverview(patient?.id ?? null);
   const currentPatientId = useAppSelector((s) => s.patients.currentPatientId);
   const [followUp, setFollowUp] = useState<RecordKind | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -90,7 +92,7 @@ export function InboxDetail({
   const meta = categoryMeta[item.category];
   const level = priorityOf(item);
   const narrative =
-    patient && isCurrentPatient
+    patient
       ? buildPatientNarrative({
           patient,
           medications: overview.medications,
@@ -104,9 +106,9 @@ export function InboxDetail({
   const hasNext = position.index < position.total;
 
   const moreItems = [
-    { key: 'task', icon: <ListChecks size={14} />, label: 'Create task', disabled: !isCurrentPatient },
-    { key: 'recall', icon: <Repeat size={14} />, label: 'Create recall', disabled: !isCurrentPatient },
-    { key: 'appointment', icon: <CalendarPlus size={14} />, label: 'Book appointment', disabled: !isCurrentPatient },
+    { key: 'task', icon: <ListChecks size={14} />, label: 'Create task', disabled: !patient },
+    { key: 'recall', icon: <Repeat size={14} />, label: 'Create recall', disabled: !patient },
+    { key: 'appointment', icon: <CalendarPlus size={14} />, label: 'Book appointment', disabled: !patient },
     { key: 'summary', icon: <Activity size={14} />, label: 'Clinical summary', disabled: !narrative },
     { type: 'divider' as const },
     { key: 'file', icon: filed ? <ArchiveRestore size={14} /> : <Archive size={14} />, label: filed ? 'Unfile this item' : 'File this item' },
@@ -234,13 +236,13 @@ export function InboxDetail({
               </div>
               <div className="ibx-patient-actions">
                 {!isCurrentPatient && (
-                  <Tooltip title={`Work on ${item.patientName} — needed to add to their record`}>
+                  <Tooltip title={`Open ${item.patientName}'s chart elsewhere in the app — not needed for anything in the Inbox`}>
                     <Button size="small" icon={<UserRound size={14} />} disabled={!item.patientId} onClick={selectPatient}>
                       Select patient
                     </Button>
                   </Tooltip>
                 )}
-                <Tooltip title={narrative ? 'Built from this patient’s records' : `Select ${item.patientName} to see their clinical summary`}>
+                <Tooltip title={narrative ? 'Built from this patient’s records' : 'This item is not linked to a patient record'}>
                   <Button size="small" icon={<Activity size={14} />} disabled={!narrative} onClick={() => setSummaryOpen(true)}>
                     Clinical summary
                   </Button>
@@ -358,7 +360,7 @@ export function InboxDetail({
 
           {/* ---- what to do about it ---- */}
           <div className="ibx-assist">
-            <InboxAiPanel item={item} patient={patient} isCurrentPatient={isCurrentPatient} unfiledCount={unfiledCount} onSelectPatient={selectPatient} />
+            <InboxAiPanel item={item} patient={patient} unfiledCount={unfiledCount} />
           </div>
         </div>
       </div>
@@ -370,13 +372,15 @@ export function InboxDetail({
           open
           onOpen={() => undefined}
           onClose={() => setFollowUp(null)}
-          prefill={
-            followUp === 'task'
+          prefill={{
+            // For the item's patient — whoever is selected elsewhere.
+            ...(patient ? { patient: patientRef(patient) } : {}),
+            ...(followUp === 'task'
               ? { title: `Review ${item.subject}`, category: item.category === 'referral' ? 'Referral' : 'Lab Follow-up' }
               : followUp === 'recall'
                 ? { reason: `Follow up ${item.subject}`, type: item.category === 'lab' ? 'Lab Test' : 'Follow-up' }
-                : { reason: `Discuss ${item.subject}`, type: 'Follow-up' }
-          }
+                : { reason: `Discuss ${item.subject}`, type: 'Follow-up' }),
+          }}
           onSaved={() => {
             message.success(`Saved for ${item.patientName}`);
             setFollowUp(null);

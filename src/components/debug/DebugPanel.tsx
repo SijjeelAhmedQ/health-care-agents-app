@@ -6,7 +6,8 @@ import { uiActions } from '@/store/slices/uiSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { FormRegistry } from '@/registry/formRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
-import type { AgentStep, DebugTrace } from '@/types/ai';
+import type { AgentStep, AgentTask, DebugTrace, TaskGraphSnapshot, TaskStatus } from '@/types/ai';
+import { AGENT_TITLES } from '@/services/ai/agents/taskGraph';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { StatusTag } from '@/components/common';
 import { AppModal } from '@/components/common/AppModal';
@@ -50,6 +51,74 @@ function StepView({ step }: { step: AgentStep }) {
   );
 }
 
+const TASK_COLOR: Record<TaskStatus, string> = {
+  PENDING: 'default',
+  ASSIGNED: 'cyan',
+  IN_PROGRESS: 'blue',
+  COMPLETED: 'green',
+  FAILED: 'red',
+  WAITING_FOR_USER: 'orange',
+  CANCELLED: 'default',
+};
+
+/** What a task handed on, briefly: the ids and names, not the records themselves. */
+function resultLine(task: AgentTask): string | null {
+  const r = task.result;
+  if (!r) return null;
+  const data = r.data === undefined ? '' : Array.isArray(r.data) ? `${r.data.length} item${r.data.length === 1 ? '' : 's'}` : typeof r.data === 'string' ? 'text' : 'details';
+  const parts = [r.patientId && `patientId=${r.patientId}`, r.patientName && `patientName=${r.patientName}`, data && `data: ${data}`].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function StepsTimeline({ steps }: { steps: AgentStep[] }) {
+  return steps.length ? <Timeline style={{ marginTop: 8 }} items={steps.map((s) => ({ color: stepColor(s), children: <StepView step={s} /> }))} /> : null;
+}
+
+/** Multi-agent mode: the master, its task graph, and what each specialist did for its task. */
+function TaskTree({ graph, steps }: { graph: TaskGraphSnapshot; steps: AgentStep[] }) {
+  const masterSteps = steps.filter((s) => s.agent === 'master');
+  return (
+    <div className="debug-tree">
+      <div className="debug-tree-root">
+        <strong>Master Agent</strong> <Tag className="tag-plain">{graph.route === 'fast' ? 'fast path — one task' : `${graph.tasks.length} tasks`}</Tag>
+        {graph.finishedAt ? <span className="muted" style={{ fontSize: 11 }}>{graph.finishedAt - graph.createdAt} ms</span> : null}
+      </div>
+      {masterSteps.length > 0 && <Collapse size="small" ghost items={[{ key: 'm', label: `Master steps (${masterSteps.length})`, children: <StepsTimeline steps={masterSteps} /> }]} />}
+      <ul>
+        {graph.tasks.map((t) => {
+          const own = steps.filter((s) => s.taskId === t.id);
+          const result = resultLine(t);
+          return (
+            <li key={t.id} className="debug-task">
+              <div className="flex items-center gap-2 wrap">
+                <code className="mono">{t.id}</code>
+                <strong>{AGENT_TITLES[t.agent]}</strong>
+                <Tag color={TASK_COLOR[t.status]}>{t.status}</Tag>
+                <Tag className="tag-plain" title={t.declaredType ? `The master said ${t.declaredType}; the tools it used made it ${t.executionType}` : undefined}>
+                  {t.executionType}
+                  {t.declaredType ? ` (declared ${t.declaredType})` : ''}
+                </Tag>
+                {t.model && <Tag className="tag-plain">{t.model}</Tag>}
+                {t.retryCount > 0 && <Tag color="gold">retried {t.retryCount}×</Tag>}
+                {t.triedAgents?.length ? <Tag color="purple">reassigned from {t.triedAgents.map((a) => AGENT_TITLES[a]).join(', ')}</Tag> : null}
+              </div>
+              <div style={{ marginTop: 2 }}>{t.instruction}</div>
+              <dl className="debug-kv debug-task-kv">
+                <dt>Depends on</dt><dd>{t.dependsOn.length ? t.dependsOn.join(', ') : '—'}</dd>
+                {t.waitingFor && (<><dt>Waiting for</dt><dd>{t.waitingFor}</dd></>)}
+                {result && (<><dt>Result</dt><dd>{result}</dd></>)}
+                {t.result?.reply && (<><dt>Reply</dt><dd>{t.result.reply}</dd></>)}
+                {t.error && (<><dt>{t.status === 'FAILED' || t.status === 'CANCELLED' ? 'Error' : 'Last error'}</dt><dd style={{ color: '#e5484d' }}>{t.error}</dd></>)}
+              </dl>
+              {own.length > 0 && <Collapse size="small" ghost items={[{ key: t.id, label: `Steps (${own.length})`, children: <StepsTimeline steps={own} /> }]} />}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function TraceView({ trace }: { trace: DebugTrace }) {
   const pending = useAppSelector((s) => s.voice.pendingConfirmation);
   const toolCalls = trace.steps.filter((s) => s.type === 'tool').length;
@@ -65,8 +134,9 @@ function TraceView({ trace }: { trace: DebugTrace }) {
       </dl>
       <Collapse
         size="small"
-        defaultActiveKey={['steps']}
+        defaultActiveKey={trace.graph ? ['graph'] : ['steps']}
         items={[
+          ...(trace.graph ? [{ key: 'graph', label: `Task graph (${trace.graph.tasks.length})`, children: <TaskTree graph={trace.graph} steps={trace.steps} /> }] : []),
           {
             key: 'steps',
             label: `Agent steps (${trace.steps.length - toolCalls} model, ${toolCalls} tool)`,

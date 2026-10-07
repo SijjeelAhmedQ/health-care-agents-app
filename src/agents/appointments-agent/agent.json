@@ -1,0 +1,408 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "appointments",
+  "agent": "appointments",
+  "name": "My Appointment Agent",
+  "skill": "src/agents/appointments-agent/SKILL.md",
+  "version": "2.0",
+  "role": "specialist",
+  "description": "CareFlow's My Appointment Agent. The signed-in provider's OWN appointments — every appointment booked with them, across patients: list and search them (\"my appointments\", \"my schedule\", \"who am I seeing tomorrow\"), cancel one with a note, reschedule one. A patient's own appointments are the Appointments Agent's.",
+  "toolSummary": {
+    "total": 14,
+    "mutating": 4,
+    "screenOnly": 7,
+    "readOnly": 3,
+    "reports": 0,
+    "mutatingTools": [
+      "cancel_my_appointment",
+      "reschedule_my_appointment",
+      "save_open_form",
+      "confirm_pending_action"
+    ]
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": [
+    {
+      "name": "list_my_appointments",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "The provider's OWN appointments (\"my appointments\", \"my schedule\", \"who am I seeing\"): shows them on My Appointments and returns them with the patient each one is with.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "when": {
+            "type": "string",
+            "enum": [
+              "upcoming",
+              "today",
+              "past",
+              "cancelled",
+              "all"
+            ],
+            "description": "Which ones; upcoming when not said"
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Only this day, YYYY-MM-DD"
+          },
+          "patient": {
+            "type": "string",
+            "description": "Only those with this patient (the patient's name)"
+          }
+        }
+      }
+    },
+    {
+      "name": "cancel_my_appointment",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Cancel one of the provider's OWN booked appointments, with a cancellation note: opens its cancel dialog on My Appointments; cancelled only after the provider confirms. Identify it by id, or by the patient's name plus its date / time when needed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "appointment": {
+            "type": "string",
+            "description": "The appointment id from list_my_appointments"
+          },
+          "patient": {
+            "type": "string",
+            "description": "The patient's name, when no id"
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Its date, YYYY-MM-DD"
+          },
+          "time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "description": "Its start time, HH:mm"
+          },
+          "note": {
+            "type": "string",
+            "description": "The cancellation note, in the provider's words; leave out when not said (they are asked)"
+          }
+        }
+      }
+    },
+    {
+      "name": "reschedule_my_appointment",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Move one of the provider's OWN booked appointments to a new date / time, with a reschedule comment: opens its reschedule dialog on My Appointments; moved only after the provider confirms. Double bookings are refused.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "appointment": {
+            "type": "string",
+            "description": "The appointment id from list_my_appointments"
+          },
+          "patient": {
+            "type": "string",
+            "description": "The patient's name, when no id"
+          },
+          "from_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "When it is NOW (only to pick the right one), YYYY-MM-DD"
+          },
+          "from_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "description": "Its start time NOW, HH:mm"
+          },
+          "to_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "The date to MOVE it to, YYYY-MM-DD"
+          },
+          "to_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "description": "The start time to MOVE it to, HH:mm"
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "comment": {
+            "type": "string",
+            "description": "The reschedule comment, in the provider's words; leave out when not said (they are asked)"
+          }
+        }
+      }
+    },
+    {
+      "name": "open_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Open a page or a Summary tab: dashboard (Dashboard), patients (Patients), inbox (Inbox), summary (Summary), my-appointments (My Appointments), configuration (Configuration), summary-ai (AI Summary), summary-medication (Medications), summary-diagnosis (Diagnoses), summary-task (Tasks), summary-recall (Recalls), summary-appointment (Appointments), inbox-all (Inbox — All), inbox-lab (Inbox — Lab), inbox-radiology (Inbox — Radiology), inbox-referral (Inbox — Referrals), inbox-discharge (Inbox — Discharge Summary).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string",
+            "enum": [
+              "dashboard",
+              "patients",
+              "inbox",
+              "summary",
+              "my-appointments",
+              "configuration",
+              "summary-ai",
+              "summary-medication",
+              "summary-diagnosis",
+              "summary-task",
+              "summary-recall",
+              "summary-appointment",
+              "inbox-all",
+              "inbox-lab",
+              "inbox-radiology",
+              "inbox-referral",
+              "inbox-discharge"
+            ],
+            "description": "Page id"
+          }
+        },
+        "required": [
+          "page"
+        ]
+      }
+    },
+    {
+      "name": "go_back",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Go back to the previous screen (in the Inbox: close the open record).",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "scroll_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Scroll the current page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "top",
+              "bottom"
+            ]
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      }
+    },
+    {
+      "name": "control_list",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Search, filter or page the list on screen (see CONTEXT: list on screen), e.g. {\"filter\": \"Status\", \"value\": \"Active\"}, {\"page\": \"next\"}, {\"search\": \"khan\"}, {\"clear\": true}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "search": {
+            "type": "string",
+            "description": "Text to search for; \"\" clears the search"
+          },
+          "filter": {
+            "type": "string",
+            "description": "A filter of the list, by its name"
+          },
+          "value": {
+            "type": "string",
+            "description": "The option to filter by; \"all\" removes that filter"
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Clear the search and every filter"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "next",
+                  "previous",
+                  "first",
+                  "last"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "fill_open_form",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Set fields on the form that is open now (see CONTEXT: open form and its values) — e.g. {\"frequency\": \"Twice daily\"}. Use it to answer a pending question or to change what the form holds. Arguments are the form's own field names, in the same formats as the add_* tools.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "clear_form_field",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Empty one field of the open form.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ]
+      }
+    },
+    {
+      "name": "save_open_form",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user asked to save the open form. If a save is already waiting for their confirmation, this is that confirmation and it saves; otherwise it checks the form and asks them to confirm.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "confirm_pending_action",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Carry out the pending save / delete / filing shown in CONTEXT. Call it ONLY when the user has just said yes / confirm / save / delete it in reply to that pending confirmation — never on your own initiative.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_pending_action",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user said no / cancel / stop: drop the pending confirmation or question and close the open form without saving.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "wait_for_more_speech",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "What was said is an unfinished fragment (cut off mid-sentence). Nothing is done; it is joined with what the user says next.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "not_my_task",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "SAID is not something your tools do (it belongs to another part of the app), or it is not an answer to the pending question or confirmation — hand it back to the master instead of guessing. Never use it for something your tools can do.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "better_agent": {
+            "type": "string",
+            "enum": [
+              "patients",
+              "dashboard",
+              "appointments",
+              "patient_appointments",
+              "medications",
+              "diagnoses",
+              "tasks",
+              "recalls",
+              "notes",
+              "summary",
+              "inbox"
+            ],
+            "description": "The agent it belongs to, if you know: patients, dashboard, appointments, patient_appointments, medications, diagnoses, tasks, recalls, notes, summary, inbox"
+          }
+        }
+      }
+    }
+  ]
+}

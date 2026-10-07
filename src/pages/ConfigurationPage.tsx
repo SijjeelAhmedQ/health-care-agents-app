@@ -1,276 +1,271 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Collapse, Input, InputNumber, Radio, Select, Slider, Space, Switch, Tag, Tooltip, message } from 'antd';
-import { AudioLines, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, Loader2, RefreshCw, RotateCcw, Save } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useResponsive } from '@/hooks';
+import { Alert, Button, Input, InputNumber, Popover, Radio, Select, Slider, Space, Tag, Tooltip, message } from 'antd';
+import { Activity, AudioLines, Boxes, Bot, CheckCircle2, CircleAlert, Gauge, Loader2, Mic, RefreshCw, RotateCcw, Save, SlidersHorizontal, Undo2 } from 'lucide-react';
 import { useAppSelector } from '@/store';
 import { PageHeader, SectionCard } from '@/components/common';
-import { aiConfig, bridgeHttpUrl, clearAIOverride, effectiveConfig, getAIOverride, ONE_GO_MODELS, setAIOverride, type AIConfig, type LLMProviderKind } from '@/services/ai/config';
-import { listModels, testModel, unloadOllamaModel, type ModelInfo, type ModelTestResult } from '@/services/ai/modelCatalog';
+import { aiConfig, bridgeHttpUrl, effectiveConfig, getAIOverride, setAIOverride } from '@/services/ai/config';
+import { SOURCE_LABELS, SPEECH_LABELS } from '@/services/ai/agentModels';
 import { getSttConfig, saveSttConfig, type SttConfig, type SttSettings } from '@/services/ai/sttConfig';
 import { getVoiceController } from '@/services/ai/voiceController';
-import { AiSetupSection } from '@/components/config/AiSetupSection';
-
-const RUNTIMES: Array<{ value: LLMProviderKind; label: string; hint: string; defaultUrl: string }> = [
-  { value: 'ollama', label: 'Ollama', hint: 'Models you pull with `ollama pull …` appear here.', defaultUrl: 'http://127.0.0.1:11434' },
-  { value: 'openai-compatible', label: 'OpenAI-compatible server', hint: 'Your own llama.cpp server, LM Studio, mlx_lm.server or vLLM. For OpenRouter use “Where the AI runs” above.', defaultUrl: 'http://127.0.0.1:8080' },
-  { value: 'bridge', label: 'Python bridge', hint: "Uses the bridge's own model runtime (python/.env).", defaultUrl: 'http://127.0.0.1:8765' },
-];
-
-const gb = (bytes?: number) => (bytes ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : undefined);
-const REFRESH_MS = 15000;
+import { MONITOR_PATH } from '@/services/ai/monitor/channel';
+import { ModelsSection } from '@/components/config/ModelsSection';
+import { AGENT_ICON, AgentsSection } from '@/components/config/AgentsSection';
+import { AGENT_META, AGENT_ORDER, agentRuns, enabledSources, shortModel, type Change, type ConfigTab, type Draft, type Problem } from '@/components/config/configModel';
+import { SOURCE_ICON } from '@/components/config/modelPickers';
+import { useConfigDraft, type ApplyResult } from '@/components/config/useConfigDraft';
+import '@/styles/config.css';
 
 /**
- * Configuration of the AI models.
+ * Configuration, in three tabs:
  *
- * The language model: every model the chosen runtime has, read live (a model
- * pulled into Ollama shows up here on its own), with whether it can call tools
- * — the assistant needs that. The speech model: every Omi Med STT build and
- * parakeet.cpp backend the bridge can use on this machine.
+ *   Models     WHERE models can run and which ones — This Computer, Kaggle, OpenRouter (any of them on)
+ *   Agents     WHICH of those models each agent uses — every agent on its own
+ *   Advanced   performance, and this computer's speech engine
+ *
+ * The page holds a draft. A summary at the top says what runs now; a save bar rises from the foot as soon
+ * as something changed — the one control that changes anything — and says what is left to fix and where.
  */
+const TABS: readonly ConfigTab[] = ['models', 'agents', 'advanced'];
+
 export default function ConfigurationPage() {
+  const state = useConfigDraft();
+  const { draft, saved, changes, problems, applying, discard, bridgeError } = state;
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('tab') as ConfigTab | null;
+  const tab: ConfigTab = asked && TABS.includes(asked) ? asked : 'models';
+  const setTab = useCallback((next: ConfigTab) => setParams((p) => ({ ...Object.fromEntries(p), tab: next }), { replace: true }), [setParams]);
+  const [result, setResult] = useState<ApplyResult | null>(null);
+  const navigate = useNavigate();
+  const monitoring = useAppSelector((s) => s.monitor.requests[0]?.status === 'running');
+  const dirty = changes.length > 0;
+  const canApply = dirty && !problems.length && !applying;
+
+  const run = useCallback(async () => {
+    setResult(null);
+    const r = await state.apply();
+    setResult(r);
+    if (r.ok) message.success(r.text);
+    else message.error(r.text);
+  }, [state]);
+
+  // Ctrl / ⌘ + Enter applies — from anywhere on the page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canApply) {
+        e.preventDefault();
+        void run();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canApply, run]);
+
+  const onTabKey = (e: ReactKeyboardEvent) => {
+    const i = TABS.indexOf(tab);
+    if (e.key === 'ArrowRight') setTab(TABS[(i + 1) % TABS.length]);
+    if (e.key === 'ArrowLeft') setTab(TABS[(i + TABS.length - 1) % TABS.length]);
+  };
+
+  const tabInfo: Record<ConfigTab, { title: string; icon: ReactNode; sub: string }> = {
+    models: { title: 'Models', icon: <Boxes size={18} />, sub: `${enabledSources(draft.models).length} of 3 providers on` },
+    agents: { title: 'Agents', icon: <Bot size={18} />, sub: draft.multiAgent ? `Multi-agent · ${AGENT_ORDER.filter((k) => agentRuns(k, draft)).length} agents` : `Single-agent${draft.safety ? ' · Safety on' : ' mode'}` },
+    advanced: { title: 'Advanced', icon: <SlidersHorizontal size={18} />, sub: 'Performance · speech engine' },
+  };
+
   return (
-    <div className="page">
-      <PageHeader title="Configuration" subtitle="Choose the models the assistant runs on. Changes apply at once; nothing needs a restart." />
-      <AiSetupSection />
-      <div className="config-grid">
-        <LanguageModelSection />
-        <SpeechModelSection />
+    <div className="page cfg-page">
+      <PageHeader
+        title="Configuration"
+        subtitle="Where the AI runs, and which model each agent thinks with. Nothing changes until you apply."
+        actions={
+          <Button
+            className="cfg-monitor-btn"
+            icon={<Activity size={15} />}
+            href={MONITOR_PATH}
+            title="Its own page (/agent-monitor). Ctrl + click opens it in a new tab, to watch the agents beside the app."
+            onClick={(e) => {
+              // A plain click stays in the app; Ctrl / ⌘ / middle click is the browser's: a new tab.
+              if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              navigate(MONITOR_PATH);
+            }}
+          >
+            Agent Monitoring
+            {monitoring && <span className="cfg-live-dot" aria-label="agents working" />}
+          </Button>
+        }
+      />
+      {bridgeError && (
+        <Alert className="cfg-bridge-alert" type="warning" showIcon message="The bridge is not reachable" description={`${bridgeError} Kaggle, OpenRouter and speech settings go through it; This Computer’s models still work.`} />
+      )}
+
+      <RunningNow saved={saved} />
+
+      <div className="cfg-tabs" role="tablist" aria-label="Configuration" onKeyDown={onTabKey}>
+        {TABS.map((t) => {
+          const tabProblems = problems.filter((p) => p.tab === t).length;
+          const tabChanges = changes.filter((c) => c.tab === t).length;
+          return (
+            <button key={t} type="button" role="tab" id={`cfg-tab-${t}`} aria-controls={`cfg-panel-${t}`} aria-selected={tab === t} tabIndex={tab === t ? 0 : -1} data-tab={t} className={`cfg-tab${tab === t ? ' is-on' : ''}`} onClick={() => setTab(t)}>
+              <span className="cfg-tab-icon" aria-hidden>
+                {tabInfo[t].icon}
+              </span>
+              <span className="cfg-tab-text">
+                <span className="cfg-tab-title">{tabInfo[t].title}</span>
+                <span className="cfg-tab-sub">{tabInfo[t].sub}</span>
+              </span>
+              {tabProblems > 0 ? (
+                <span className="cfg-tab-badge is-bad" title={`${tabProblems} to fix`}>
+                  {tabProblems}
+                </span>
+              ) : tabChanges > 0 ? (
+                <span className="cfg-tab-badge is-dot" title="Unsaved changes" />
+              ) : null}
+            </button>
+          );
+        })}
       </div>
+
+      <div className="cfg-panel" role="tabpanel" id={`cfg-panel-${tab}`} aria-labelledby={`cfg-tab-${tab}`}>
+        {tab === 'models' && <ModelsSection {...state} openAdvanced={() => setTab('advanced')} />}
+        {tab === 'agents' && <AgentsSection {...state} />}
+        {tab === 'advanced' && (
+          <div className="cfg-advanced">
+            <div className="cfg-card">
+              <div className="cfg-card-title">
+                <Gauge size={16} /> Performance
+              </div>
+              <p className="cfg-card-text">For every language model the agents use.</p>
+              <div className="cfg-perf">
+                <NumberSetting label="Context window (tokens)" hint="The least it may be — raised by itself to fit the instructions and tools." value={draft.perf.numCtx} min={4096} max={131072} step={1024} onChange={(v) => state.update((d) => ({ ...d, perf: { ...d.perf, numCtx: v } }))} />
+                <NumberSetting label="GPU layers (This Computer)" hint="99 = the whole model on the GPU; 0 = CPU only." value={draft.perf.numGpu} min={0} max={999} onChange={(v) => state.update((d) => ({ ...d, perf: { ...d.perf, numGpu: v } }))} />
+                <NumberSetting label="Timeout per request (s)" hint="The first request after a change loads the model." value={Math.round(draft.perf.timeoutMs / 1000)} min={10} max={900} onChange={(v) => state.update((d) => ({ ...d, perf: { ...d.perf, timeoutMs: v * 1000 } }))} />
+                <NumberSetting label="Steps per request" hint="Most model calls one request (or task) may take." value={draft.perf.maxSteps} min={1} max={12} onChange={(v) => state.update((d) => ({ ...d, perf: { ...d.perf, maxSteps: v } }))} />
+              </div>
+            </div>
+            <div id="cfg-speech-engine" className="config-grid">
+              <SpeechModelSection />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {(dirty || applying) && <SaveBar changes={changes} problems={problems} applying={applying} canApply={canApply} result={result} onApply={() => void run()} onDiscard={() => { discard(); setResult(null); }} onGoTo={setTab} />}
     </div>
   );
 }
 
-// ---------------------------------------------------------------- language model
-
-function LanguageModelSection() {
-  const active = useAppSelector((s) => s.voice.llmProvider);
-  const revision = useAppSelector((s) => s.ui.aiConfigRevision);
-  const [draft, setDraft] = useState<AIConfig['llm']>(() => effectiveConfig().llm);
-  // Changed elsewhere (e.g. by voice): show what is now saved.
-  useEffect(() => {
-    if (revision) setDraft(effectiveConfig().llm);
-  }, [revision]);
-  const [models, setModels] = useState<ModelInfo[] | null>(null);
-  const [listError, setListError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [test, setTest] = useState<ModelTestResult | 'running' | null>(null);
-  const [applying, setApplying] = useState<null | 'loading'>(null);
-  const [applied, setApplied] = useState<{ ok: boolean; text: string } | null>(null);
-  const runtime = RUNTIMES.find((r) => r.value === draft.provider)!;
-  const saved = effectiveConfig().llm;
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
-
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      setModels(await listModels(draft.provider, draft.apiUrl));
-      setListError(null);
-    } catch (e) {
-      setModels(null);
-      setListError((e as Error).message);
-    } finally {
-      setRefreshing(false);
-    }
-  }, [draft.provider, draft.apiUrl]);
-
-  // Live list: on open, when the runtime or its address changes, when the window regains focus
-  // (e.g. after `ollama pull` in a terminal), and every few seconds while the page is open.
-  useEffect(() => {
-    const t = setTimeout(() => void refresh(), 300);
-    const onFocus = () => void refresh();
-    window.addEventListener('focus', onFocus);
-    const timer = setInterval(() => document.visibilityState === 'visible' && void refresh(), REFRESH_MS);
-    return () => {
-      clearTimeout(t);
-      clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [refresh]);
-
-  const selected = models?.find((m) => m.name === draft.model);
-  const set = <K extends keyof AIConfig['llm']>(key: K, value: AIConfig['llm'][K]) => {
-    setDraft((d) => ({ ...d, [key]: value }));
-    setTest(null);
-  };
-
-  const apply = async () => {
-    const previous = effectiveConfig().llm;
-    setApplying('loading');
-    setApplied(null);
-    try {
-      setAIOverride({ ...getAIOverride(), llm: draft });
-      // A small GPU cannot hold two models: free the old one before the new one loads.
-      if (previous.provider === 'ollama' && (previous.model !== draft.model || previous.apiUrl !== draft.apiUrl)) await unloadOllamaModel(previous.apiUrl, previous.model);
-      const controller = getVoiceController();
-      controller.reconfigure();
-      const started = Date.now();
-      const problem = await controller.warmUp();
-      if (problem) {
-        setApplied({ ok: false, text: `Saved, but ${draft.model} could not be loaded: ${problem}` });
-      } else {
-        setApplied({ ok: true, text: `${draft.model} is loaded and ready (${Math.round((Date.now() - started) / 1000)} s).` });
-        message.success(`The assistant now runs on ${draft.model}`);
-      }
-    } finally {
-      setApplying(null);
-    }
-  };
-
-  const runTest = async () => {
-    setTest('running');
-    setTest(await testModel(draft));
-  };
-
-  const reset = () => {
-    const { stt } = getAIOverride();
-    clearAIOverride();
-    if (stt) setAIOverride({ stt });
-    setDraft(effectiveConfig().llm);
-    getVoiceController().reconfigure();
-    message.info('Language model settings are back to the defaults');
-  };
-
-  const options = (models ?? []).map((m) => ({
-    value: m.name,
-    disabled: m.tools === false,
-    label: (
-      <span className="config-model-option">
-        <strong>{m.name}</strong>
-        <span className="config-model-tags">
-          {m.parameterSize && <Tag>{m.parameterSize}</Tag>}
-          {m.quantization && <Tag>{m.quantization}</Tag>}
-          {gb(m.sizeBytes) && <Tag>{gb(m.sizeBytes)}</Tag>}
-          {m.tools === true && <Tag color="green">tool calling</Tag>}
-          {m.tools === false && <Tag color="red">no tool calling</Tag>}
-        </span>
-      </span>
-    ),
-  }));
-
+/** What runs now, at a glance: the microphone, the mode, the providers, and every agent on its provider. */
+function RunningNow({ saved }: { saved: Draft }) {
+  const speech = SPEECH_LABELS[saved.models.speech];
   return (
-    <SectionCard title="Language model" icon={<BrainCircuit size={16} />} description="The model that understands requests and decides which tools to call.">
-      <div className="config-status">
-        <span className="muted">In use:</span> <Tag color="blue">{active || '—'}</Tag>
-      </div>
-
-      <div className="config-field">
-        <label>Runtime</label>
-        <Radio.Group
-          className="choice-bar"
-          value={draft.provider}
-          onChange={(e) => {
-            const next = RUNTIMES.find((r) => r.value === e.target.value)!;
-            setDraft((d) => ({ ...d, provider: next.value, apiUrl: d.provider === next.value ? d.apiUrl : next.defaultUrl }));
-          }}
-          optionType="button"
-          options={RUNTIMES.map((r) => ({ value: r.value, label: r.label }))}
-        />
-        <div className="config-hint">{runtime.hint}</div>
-      </div>
-
-      <div className="config-field">
-        <label htmlFor="llm-url">Server address</label>
-        <Input id="llm-url" value={draft.apiUrl} onChange={(e) => set('apiUrl', e.target.value.trim())} placeholder={runtime.defaultUrl} />
-      </div>
-
-      <div className="config-field">
-        <label>
-          Model
-          <Tooltip title="Refresh the list">
-            <Button type="text" size="small" icon={<RefreshCw size={14} className={refreshing ? 'spin' : undefined} />} onClick={() => void refresh()} aria-label="Refresh the model list" />
-          </Tooltip>
-        </label>
-        <Select
-          showSearch
-          value={draft.model}
-          onChange={(v: string) => set('model', v)}
-          options={options}
-          optionLabelProp="value"
-          loading={refreshing && !models}
-          notFoundContent={listError ? 'The runtime is not reachable' : 'No models installed'}
-          style={{ width: '100%' }}
-        />
-        {listError && draft.provider === 'openai-compatible' && !draft.apiUrl.includes('/openrouter') ? (
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginTop: 8 }}
-            message={`No server is running at ${draft.apiUrl}`}
-            description="This option is for a model server you run yourself (LM Studio, llama.cpp, vLLM). For OpenRouter or the Kaggle GPU, choose “Kaggle + OpenRouter” or “Kaggle GPU” in “Where the AI runs” above — no address is needed there."
-          />
-        ) : (
-          listError && <Alert type="error" showIcon message="Cannot list the models" description={listError} style={{ marginTop: 8 }} />
-        )}
-        {models && !selected && (
-          <Alert type="warning" showIcon style={{ marginTop: 8 }} message={`${draft.model} is not installed in this runtime`} description={draft.provider === 'ollama' ? `Run: ollama pull ${draft.model}` : undefined} />
-        )}
-        {selected?.tools === null && <div className="config-hint">This runtime does not say whether the model can call tools — use Test to find out.</div>}
-        {models && <div className="config-hint">{models.length} model{models.length === 1 ? '' : 's'} installed · the list refreshes by itself, so a newly pulled model appears here.</div>}
-      </div>
-
-      <div className="config-field">
-        <label htmlFor="llm-plan">Break long requests into steps</label>
-        <Space align="start">
-          <Switch id="llm-plan" checked={draft.planSteps !== false && !ONE_GO_MODELS.has(draft.model)} disabled={ONE_GO_MODELS.has(draft.model)} onChange={(on) => set('planSteps', on)} />
-          <span className="config-hint" style={{ marginTop: 0 }}>
-            {ONE_GO_MODELS.has(draft.model)
-              ? `${draft.model} does a long request in one go: split into steps it took about twice as long and got less of it right.`
-              : 'A long request (“go to patients, select James, add metformin, a task, a recall and an appointment”) is first split into its actions, which are then done one by one — the assistant panel shows the steps. Short requests are not affected. Takes one extra model call.'}
+    <div className="cfg-now" aria-label="Running now">
+      <span className="cfg-now-label">
+        <span className="cfg-live-dot" aria-hidden /> Running now
+      </span>
+      <span className="cfg-now-chips">
+        <span className="cfg-now-chip">
+          <Mic size={13} /> {speech.title} <span className="muted">· {speech.where}</span>
+        </span>
+        <span className="cfg-now-chip">{saved.multiAgent ? 'Multi-agent' : 'Single-agent'}</span>
+        {enabledSources(saved.models).map((s) => (
+          <span key={s} className="cfg-now-chip" data-source={s}>
+            {SOURCE_ICON[s](13)} {SOURCE_LABELS[s]}
           </span>
-        </Space>
-      </div>
-
-      <Collapse
-        size="small"
-        className="config-advanced"
-        items={[
-          {
-            key: 'advanced',
-            label: 'Performance',
-            children: (
-              <div className="config-advanced-grid">
-                <NumberSetting label="Context window (tokens)" hint="The least it may be: the app raises it by itself to fit the assistant's instructions and tools (a prompt that does not fit loses its start — the instructions and today's date)." value={draft.numCtx} min={4096} max={131072} step={1024} onChange={(v) => set('numCtx', v)} />
-                <NumberSetting label="GPU layers" hint="99 = the whole model on the GPU; 0 = CPU only." value={draft.numGpu} min={0} max={999} onChange={(v) => set('numGpu', v)} />
-                <NumberSetting label="Timeout per request (s)" hint="The first request after a change loads the model." value={Math.round(draft.timeoutMs / 1000)} min={10} max={900} onChange={(v) => set('timeoutMs', v * 1000)} />
-                <NumberSetting label="Steps per request" hint="Most model calls one request may take (tool → result → next tool …)." value={draft.maxSteps} min={1} max={12} onChange={(v) => set('maxSteps', v)} />
-              </div>
-            ),
-          },
-        ]}
-      />
-
-      {test === 'running' && <Alert type="info" showIcon icon={<Loader2 size={16} className="spin" />} message="Testing — loading the model can take a minute the first time…" style={{ marginTop: 12 }} />}
-      {test && test !== 'running' && (
-        <Alert
-          style={{ marginTop: 12 }}
-          type={test.ok && test.toolCalling ? 'success' : test.ok ? 'warning' : 'error'}
-          showIcon
-          message={test.ok && test.toolCalling ? `Works with the assistant (${(test.ms / 1000).toFixed(1)} s)` : test.ok ? 'The model answered, but did not call a tool' : 'The test failed'}
-          description={test.detail}
-        />
-      )}
-      {applying && <Alert type="info" showIcon icon={<Loader2 size={16} className="spin" />} message={`Loading ${draft.model} and preparing its cache — this can take a minute…`} style={{ marginTop: 12 }} />}
-      {applied && !applying && <Alert type={applied.ok ? 'success' : 'error'} showIcon message={applied.text} style={{ marginTop: 12 }} />}
-
-      <Space wrap className="config-actions">
-        <Button icon={<FlaskConical size={15} />} onClick={() => void runTest()} disabled={test === 'running' || !!applying}>
-          Test
-        </Button>
-        <Button type="primary" icon={<Save size={15} />} onClick={() => void apply()} loading={!!applying} disabled={!dirty || selected?.tools === false}>
-          Save and apply
-        </Button>
-        <Button icon={<RotateCcw size={15} />} onClick={reset} disabled={!!applying}>
-          Defaults ({aiConfig.llm.model})
-        </Button>
-      </Space>
-    </SectionCard>
+        ))}
+      </span>
+      <span className="cfg-now-agents">
+        {AGENT_ORDER.filter((k) => agentRuns(k, saved)).map((k) => (
+          <Tooltip key={k} title={`${AGENT_META[k].title} — ${SOURCE_LABELS[saved.agents[k].source]} · ${saved.agents[k].model}`}>
+            <span className="cfg-now-agent" data-agent={k} data-source={saved.agents[k].source}>
+              {AGENT_ICON[k](14)}
+              <span>{shortModel(saved.agents[k].model)}</span>
+            </span>
+          </Tooltip>
+        ))}
+      </span>
+    </div>
   );
+}
+
+const CHORD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘↵' : 'Ctrl ↵';
+const TAB_TITLES: Record<ConfigTab, string> = { models: 'Models', agents: 'Agents', advanced: 'Advanced' };
+
+/** Rises from the foot once something changed: what Apply would do, what is left to fix (and where), Apply. */
+function SaveBar({ changes, problems, applying, canApply, result, onApply, onDiscard, onGoTo }: { changes: Change[]; problems: Problem[]; applying: boolean; canApply: boolean; result: ApplyResult | null; onApply: () => void; onDiscard: () => void; onGoTo: (t: ConfigTab) => void }) {
+  // On a phone the bar floats just above the bottom navigation — outside the page, so nothing clips it.
+  const { isMobile } = useResponsive();
+  const list = (
+    <ul className="cfg-save-list">
+      {changes.map((c) => (
+        <li key={c.key}>
+          <span className="cfg-save-tab">{TAB_TITLES[c.tab]}</span> {c.text}
+        </li>
+      ))}
+    </ul>
+  );
+  const fixes = (
+    <ul className="cfg-save-list is-bad">
+      {problems.map((p) => (
+        <li key={p.text}>
+          <button type="button" onClick={() => onGoTo(p.tab)}>
+            <span className="cfg-save-tab">{TAB_TITLES[p.tab]}</span> {p.text}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+  const bar = (
+    <div className={`cfg-save${isMobile ? ' is-floating' : ''}`} data-bad={problems.length ? 'true' : 'false'} role="region" aria-label="Unsaved changes">
+      <div className="cfg-save-info">
+        <Popover content={list} title="What Apply will change" trigger="click" placement="topLeft">
+          <button type="button" className="cfg-save-count">
+            <span className="cfg-save-dot" aria-hidden />
+            {changes.length} <span className="cfg-save-word">unsaved&nbsp;</span>change{changes.length === 1 ? '' : 's'}
+          </button>
+        </Popover>
+        {problems.length > 0 ? (
+          <Popover content={fixes} title="Before you apply" trigger="click" placement="topLeft">
+            <button type="button" className="cfg-save-problems" onClick={() => onGoTo(problems[0].tab)}>
+              <CircleAlert size={14} /> {problems.length === 1 ? problems[0].text : `${problems.length} things to fix`}
+            </button>
+          </Popover>
+        ) : result && !result.ok ? (
+          <span className="cfg-save-problems">
+            <CircleAlert size={14} /> {result.text}
+          </span>
+        ) : (
+          <span className="cfg-save-ready">
+            <CheckCircle2 size={14} /> Ready to apply
+          </span>
+        )}
+        {/* Every line, for screen readers and for tests; the popovers show them on click. */}
+        <span className="sr-only">
+          {changes.map((c) => c.text).join('. ')}. {problems.map((p) => p.text).join(' ')}
+        </span>
+      </div>
+      <div className="cfg-save-actions">
+        <Button className="cfg-save-discard" icon={<Undo2 size={15} />} onClick={onDiscard} disabled={applying} aria-label="Discard changes">
+          Discard
+        </Button>
+        <Button type="primary" className="cfg-apply" icon={applying ? <Loader2 size={15} className="spin" /> : <Save size={15} />} onClick={onApply} disabled={!canApply}>
+          {applying ? 'Applying…' : 'Apply'}
+          {!applying && <kbd className="cfg-kbd">{CHORD}</kbd>}
+        </Button>
+      </div>
+    </div>
+  );
+  return isMobile ? createPortal(bar, document.body) : bar;
 }
 
 function NumberSetting({ label, hint, value, min, max, step, onChange }: { label: string; hint: string; value: number; min: number; max: number; step?: number; onChange: (v: number) => void }) {
   return (
     <div className="config-field">
       <label>{label}</label>
-      <InputNumber value={value} min={min} max={max} step={step} onChange={(v) => typeof v === 'number' && onChange(v)} style={{ width: '100%' }} />
+      <InputNumber size="large" value={value} min={min} max={max} step={step} onChange={(v) => typeof v === 'number' && onChange(v)} style={{ width: '100%' }} />
       <div className="config-hint">{hint}</div>
     </div>
   );

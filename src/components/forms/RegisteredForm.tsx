@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, MessageCircleQuestion, Mic, Save, X } from
 import { useRegisteredForm, type EntryStore } from '@/hooks';
 import { useAppSelector } from '@/store';
 import { FieldRegistry } from '@/registry/fieldRegistry';
+import { FormRegistry } from '@/registry/formRegistry';
 import { AppModal, type ModalSize } from '@/components/common/AppModal';
 
 export interface FormHelpers<T> {
@@ -119,6 +120,7 @@ export function RegisteredFormModal<T extends object>({ formId, title, descripti
       message.success(all.length > 1 ? `${all.length} ${title.replace(/^add\s+/i, '').toLowerCase()}s saved` : `${title} saved`);
       form.resetFields();
       onClose();
+      FormRegistry.settled(formId, true);
     } catch (e) {
       // Said on screen, and passed on: the assistant's "yes" must not report a save that did not happen.
       message.error((e as Error).message);
@@ -141,12 +143,13 @@ export function RegisteredFormModal<T extends object>({ formId, title, descripti
         okButtonProps: { danger: true },
         cancelText: 'Keep editing',
         centered: true,
-        onOk: () => { form.resetFields(); onClose(); },
+        onOk: () => { form.resetFields(); onClose(); FormRegistry.settled(formId, false); },
       });
       return;
     }
     form.resetFields();
     onClose();
+    FormRegistry.settled(formId, false);
   };
 
   const action = submitLabel ?? def?.submitLabel ?? 'Save';
@@ -201,6 +204,7 @@ export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, 
       await onSubmit(values);
       clearVoiceFilled();
       message.success(successMessage ?? `${title} saved`);
+      FormRegistry.settled(formId, true);
     } finally {
       setSaving(false);
     }
@@ -209,7 +213,7 @@ export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, 
   const { fieldClass, voiceFilledFields, clearVoiceFilled } = useRegisteredForm<T>({ formId, form, isOpen: true, open: () => undefined, close: () => form.resetFields(), onSubmit: submit, instanceKey });
 
   const reset = () => {
-    if (!form.isFieldsTouched()) { onCancel?.(); return; }
+    if (!form.isFieldsTouched()) { onCancel?.(); FormRegistry.settled(formId, false); return; }
     Modal.confirm({
       title: 'Clear this form?',
       icon: <AlertTriangle size={20} color="#d97706" style={{ marginRight: 12, flexShrink: 0 }} />,
@@ -218,7 +222,7 @@ export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, 
       okButtonProps: { danger: true },
       cancelText: 'Keep editing',
       centered: true,
-      onOk: () => { form.resetFields(); clearVoiceFilled(); onCancel?.(); },
+      onOk: () => { form.resetFields(); clearVoiceFilled(); onCancel?.(); FormRegistry.settled(formId, false); },
     });
   };
 

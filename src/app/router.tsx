@@ -9,6 +9,7 @@ const PatientModulePage = lazy(() => import('@/pages/PatientModulePage'));
 const SummaryPage = lazy(() => import('@/pages/SummaryPage'));
 const InboxPage = lazy(() => import('@/pages/InboxPage'));
 const ConfigurationPage = lazy(() => import('@/pages/ConfigurationPage'));
+const AgentMonitoringPage = lazy(() => import('@/pages/AgentMonitoringPage'));
 const ProviderAppointmentsPage = lazy(() => import('@/pages/ProviderAppointmentsPage'));
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
 
@@ -40,6 +41,8 @@ export const router = createBrowserRouter([
   {
     element: <RequireAuth />,
     children: [
+      // Agent Monitoring: a page of its own — no sidebar, no header — to sit beside the app in a second window.
+      { path: '/agent-monitor', Component: AgentMonitoringPage },
       {
         element: <AppLayout />,
         children: [
@@ -51,6 +54,8 @@ export const router = createBrowserRouter([
           { path: '/dashboard', Component: DashboardPage },
           { path: '/patients', Component: PatientModulePage },
           { path: '/configuration', Component: ConfigurationPage },
+          // Agent Monitoring opens in its own window now (/agent-monitor); the old address leads there.
+          { path: '/configuration/monitoring', element: <Navigate to="/agent-monitor" replace /> },
           // The provider's own appointments (patients' appointments are in each patient's Summary).
           { path: '/schedule', Component: ProviderAppointmentsPage },
           { path: '/inbox', element: <Navigate to="/inbox/all" replace /> },

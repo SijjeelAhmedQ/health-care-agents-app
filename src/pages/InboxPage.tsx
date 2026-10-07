@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Button, Radio, Tooltip, message, type InputRef } from 'antd';
-import { ArrowRight, CircleAlert, Inbox as InboxIcon, Mic, MousePointerClick, RefreshCw, TriangleAlert, UserRoundCheck, Users } from 'lucide-react';
+import { ArrowRight, CircleAlert, Inbox as InboxIcon, Mic, MousePointerClick, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { useAppDispatch, useAppSelector } from '@/store';
@@ -56,12 +56,11 @@ export default function InboxPage() {
 
   const view: InboxView = isInboxView(viewParam) ? viewParam : 'all';
   const openId = params.get('item') ?? undefined;
-  /** Set when the Inbox was opened on one patient (by voice): only their items are listed. */
+  /** The patient filter (toolbar, or a voice command): only that patient's items. Never the selected patient. */
   const scopeId = params.get('patient') ?? null;
 
   const allItems = useAppSelector((s) => s.inbox.items);
   const items = useMemo(() => (scopeId ? allItems.filter((i) => i.patientId === scopeId) : allItems), [allItems, scopeId]);
-  const currentPatientId = useAppSelector((s) => s.patients.currentPatientId);
   const micOn = useAppSelector((s) => s.voice.micActive);
   /** "What can I say?" — opened from the header button or by voice. */
   const confirmFiling = useSyncExternalStore(subscribeConfirmFiling, getConfirmFiling);
@@ -173,14 +172,6 @@ export default function InboxPage() {
     const query = keep.toString();
     navigate(`/inbox/${next}${query ? `?${query}` : ''}`);
   };
-
-  // A patient scope follows the selected patient, and goes when no patient is selected.
-  useEffect(() => {
-    if (!scopeId) return;
-    if (!currentPatientId) setParam('patient', undefined);
-    else if (currentPatientId !== scopeId) setParam('patient', currentPatientId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPatientId]);
 
   // ---- filing, with an undo on every change ------------------------------------------------
   const fileIds = useCallback(
@@ -325,6 +316,10 @@ export default function InboxPage() {
         close: () => setParam('item', undefined),
         file: (ids, file) => voiceRef.current.fileIds(ids, file),
         setPatientScope: (patientId) => setParam('patient', patientId ?? undefined),
+        showOnly: ({ status, filed, attention }) => {
+          setParam('item', undefined);
+          setFilters({ ...emptyFilters(voiceRef.current.view), status, filed: filed ?? 'all', ai: attention ? 'attention' : 'all' });
+        },
       }),
     [setParam],
   );
@@ -337,14 +332,14 @@ export default function InboxPage() {
   const loading = status === 'loading' && !items.length;
   const reading = !isDesktop && !!openItem;
   const firstUrgent = filtered.find((i) => !filedSet.has(i.id) && i.attention) ?? filtered.find((i) => !filedSet.has(i.id));
-  const scopePatient = scopeId ? patientById.get(scopeId) : undefined;
-
-  /** On: only the selected patient's records. Off: every patient's. */
-  const toggleScope = () => {
-    if (scopeId) setParam('patient', undefined);
-    else if (currentPatientId) setParam('patient', currentPatientId);
-    else message.info('Select a patient first to see only their records.');
-  };
+  /** The patient filter offers every patient with something in the Inbox. */
+  const patientOptions = useMemo(() => {
+    const ids = new Set(allItems.map((i) => i.patientId).filter(Boolean));
+    return patients
+      .filter((p) => ids.has(p.id))
+      .sort((a, b) => a.fullName.localeCompare(b.fullName))
+      .map((p) => ({ value: p.id, label: p.fullName, search: `${p.fullName} ${p.mrn}`.toLowerCase(), mrn: p.mrn }));
+  }, [allItems, patients]);
 
   return (
     <div className={`ibx ${density === 'compact' ? 'is-compact' : ''}`}>
@@ -376,23 +371,6 @@ export default function InboxPage() {
             </button>
           )}
           <span className="ibx-head-sep" aria-hidden />
-          <Tooltip
-            title={
-              scopeId
-                ? 'Showing only the selected patient’s records — click to show every patient'
-                : currentPatientId
-                  ? 'Showing every patient’s records — click to show only the selected patient'
-                  : 'Showing every patient’s records — select a patient to show only theirs'
-            }
-          >
-            <button type="button" className={`ibx-scope-toggle ${scopeId ? 'is-on' : ''}`} aria-pressed={!!scopeId} onClick={toggleScope}>
-              {scopeId ? <UserRoundCheck size={14} aria-hidden /> : <Users size={14} aria-hidden />}
-              <span className="ibx-scope-toggle-label">{scopeId ? `${scopePatient?.fullName ?? 'Selected patient'} only` : 'All patients'}</span>
-              <span className="ibx-scope-toggle-track" aria-hidden>
-                <span />
-              </span>
-            </button>
-          </Tooltip>
           <Tooltip title={confirmFiling ? 'Voice asks “File this record?” before filing or unfiling' : 'Voice files straight away — Undo stays available'}>
             <div className="ibx-voice-setting">
               <span>Voice filing</span>
@@ -446,6 +424,9 @@ export default function InboxPage() {
             compact={!isDesktop}
             density={density}
             onDensity={setDensity}
+            patient={scopeId}
+            patientOptions={patientOptions}
+            onPatient={(id) => setParam('patient', id ?? undefined)}
           />
         </div>
 

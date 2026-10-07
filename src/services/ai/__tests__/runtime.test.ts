@@ -270,7 +270,7 @@ describe('AppRuntime — what the tools do', () => {
     const list = fakeList('medication', form);
     const { runtime, state } = setup();
     runtime.beginTurn(1);
-    await runtime.createRecords('medication', [{ medicationName: 'Aspirin', dosage: '75 mg', frequency: 'Once daily' }]);
+    await runtime.createRecords('medication', [{ medicationName: 'Aspirin', dosage: '75 mg', route: 'Oral', frequency: 'Once daily' }]);
     expect(state.pendingConfirmation).not.toBeNull();
     const self = await runtime.confirm();
     expect(self.ok).toBe(false);
@@ -326,6 +326,43 @@ describe('AppRuntime — what the tools do', () => {
     await runtime.deleteRecord('medication', 'Metformin');
     expect((await runtime.confirm()).ok).toBe(true); // a button press (origin ui)
     expect(deleted).toEqual([{ kind: 'medication', id: 'med-1' }]);
+    list.unregister();
+    form.unregister();
+  });
+
+  it('delete ALL of a kind: no record named, nothing clinical asked — every one listed, deleted together only after a yes', async () => {
+    const form = fakeForm('medication');
+    const list = fakeList('medication', form);
+    const { runtime, state, deleted } = setup();
+    runtime.beginTurn(1);
+    const staged = await runtime.deleteRecord('medication', undefined, { all: true });
+    runtime.endTurn();
+    expect(staged.awaitUser).toBe(true);
+    expect(staged.message).toMatch(new RegExp(`^This will delete all ${MEDS.length} medications for Liam Thompson \\(.*Metformin.*\\)\\. This cannot be undone\\. Do you want to continue\\?$`));
+    expect(staged.message).not.toMatch(/dose|route|how often|which medication/i);
+    expect(state.pendingConfirmation).toMatchObject({ kind: 'delete', recordKind: 'medication', recordIds: MEDS.map((m) => (m as { id: string }).id) });
+    expect(deleted).toEqual([]); // nothing before the provider's yes
+    expect(runtime.cancel().message).toMatch(/nothing was deleted/i);
+    expect(deleted).toEqual([]);
+
+    await runtime.deleteRecord('medication', undefined, { all: true });
+    expect((await runtime.confirm()).message).toBe(`Deleted all ${MEDS.length} medications.`);
+    expect(deleted.map((d) => d.id)).toEqual(MEDS.map((m) => (m as { id: string }).id));
+    // A patient with none: nothing to delete, nothing staged.
+    const none = await runtime.deleteRecord('recall', undefined, { all: true });
+    expect(none).toMatchObject({ ok: true, message: 'Liam Thompson has no recalls — nothing to delete.' });
+    expect(state.pendingConfirmation).toBeNull();
+    list.unregister();
+    form.unregister();
+  });
+
+  it('a record tool naming a patient selects them first — never the records of whoever was selected', async () => {
+    const form = fakeForm('medication');
+    const list = fakeList('medication', form);
+    const { runtime, state } = setup({ currentPatientId: null, currentPatientName: null });
+    await runtime.deleteRecord('medication', undefined, { all: true, patient: PATIENT.fullName });
+    expect(state.currentPatientId).toBe(PATIENT.id);
+    expect(state.pendingConfirmation?.description).toContain(PATIENT.fullName);
     list.unregister();
     form.unregister();
   });
@@ -399,7 +436,7 @@ describe('AppRuntime — what the tools do', () => {
     const list = fakeList('medication', form);
     const { runtime } = setup();
     runtime.beginTurn(1);
-    await runtime.createRecords('medication', [{ medicationName: 'Aspirin', dosage: '75 mg', frequency: 'Once daily' }]);
+    await runtime.createRecords('medication', [{ medicationName: 'Aspirin', dosage: '75 mg', route: 'Oral', frequency: 'Once daily' }]);
     expect((await runtime.saveOpenForm()).ok).toBe(false); // same turn: refused
     runtime.endTurn();
     runtime.beginTurn(2);

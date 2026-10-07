@@ -1,0 +1,537 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "medications",
+  "agent": "medications",
+  "name": "Medication Agent",
+  "skill": "src/agents/medications-agent/SKILL.md",
+  "version": "1.0",
+  "role": "specialist",
+  "description": "CareFlow's Medication Agent. A patient's medications — add, update, delete, search and get them, for the selected patient or a patient named. Use for \"add metformin 500 mg twice daily\", \"change the amlodipine to 10 mg\", \"stop the aspirin\", \"delete all medications\", \"show his medications\". Other kinds of records belong to their own agents.",
+  "recordKinds": [
+    "medication"
+  ],
+  "toolSummary": {
+    "total": 15,
+    "mutating": 5,
+    "screenOnly": 7,
+    "readOnly": 3,
+    "reports": 0,
+    "mutatingTools": [
+      "add_medications",
+      "update_record",
+      "delete_record",
+      "save_open_form",
+      "confirm_pending_action"
+    ]
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": [
+    {
+      "name": "add_medications",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Add one or more medications (and nothing else) for the selected patient or for the patients named — no need to select them first: opens the medication form (one tab per patient, one tab per medication) filled with what was said. The app asks for missing required fields and for confirmation before saving. When that form is already open (CONTEXT: open form), the new records are ADDED to it as more tabs — never save, confirm or cancel it first; saving is the provider's. With records of other kinds in the same request use add_care_plan.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "medications": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "patient": {
+                  "type": "string",
+                  "description": "Only for a patient other than the selected one: that patient's full name. Records for several patients: one record per patient, each with its patient"
+                },
+                "medicationName": {
+                  "type": "string",
+                  "description": "The drug the provider named, e.g. 'Metformin'"
+                },
+                "dosage": {
+                  "type": "string",
+                  "description": "Strength with its unit, e.g. '500 mg', '10 ml', '2 puffs'"
+                },
+                "route": {
+                  "type": "string",
+                  "enum": [
+                    "Oral",
+                    "Intravenous",
+                    "Intramuscular",
+                    "Subcutaneous",
+                    "Topical",
+                    "Inhalation",
+                    "Sublingual",
+                    "Rectal",
+                    "Ophthalmic",
+                    "Otic",
+                    "Nasal",
+                    "Transdermal"
+                  ]
+                },
+                "frequency": {
+                  "type": "string",
+                  "enum": [
+                    "Once daily",
+                    "Twice daily",
+                    "Three times daily",
+                    "Four times daily",
+                    "Every 4 hours",
+                    "Every 6 hours",
+                    "Every 8 hours",
+                    "Every 12 hours",
+                    "Once weekly",
+                    "At bedtime",
+                    "As needed"
+                  ],
+                  "description": "How many times a day: Once daily = 1, Twice daily = 2, Three times daily = 3, Four times daily = 4"
+                },
+                "duration": {
+                  "type": "string",
+                  "description": "How long to take it, e.g. '7 days', '3 months'"
+                },
+                "startDate": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "YYYY-MM-DD"
+                },
+                "endDate": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "YYYY-MM-DD"
+                },
+                "indication": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "Active",
+                    "Completed",
+                    "Discontinued",
+                    "On Hold"
+                  ]
+                },
+                "prescribedBy": {
+                  "type": "string",
+                  "description": "a provider's name"
+                },
+                "refills": {
+                  "type": "number"
+                },
+                "isPRN": {
+                  "type": "boolean"
+                },
+                "instructions": {
+                  "type": "string"
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            },
+            "minItems": 1
+          },
+          "patient": {
+            "type": "string",
+            "description": "ONE patient the provider named for all of these records (full name or MRN) — no need to select them first; omit for the selected patient"
+          },
+          "for_patients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "\"To each of\" / \"for all of\" several patients: their full names here, and every record listed ONCE (no patient field) — each patient gets all of them. Only records that differ per patient carry their own patient field. Omit for the selected patient"
+          }
+        },
+        "required": [
+          "medications"
+        ]
+      }
+    },
+    {
+      "name": "update_record",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Change an existing record of the selected patient (or the patient named): opens it for editing and writes only the given changes, then asks for confirmation. `changes` holds ONLY the fields the provider is changing, with the same names and values as the matching add_* tool (e.g. {\"frequency\": \"Twice daily\"}, {\"status\": \"Discontinued\"}) — never the record's other fields.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "medication"
+            ]
+          },
+          "record": {
+            "type": "string",
+            "description": "The record's id if you have it, otherwise its name/title as the user said it — no need to look it up first"
+          },
+          "changes": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "description": "Field name → new value, only the fields being changed"
+          },
+          "patient": {
+            "type": "string",
+            "description": "The patient the provider named, when not the selected one — they are selected first"
+          }
+        },
+        "required": [
+          "kind",
+          "record",
+          "changes"
+        ]
+      }
+    },
+    {
+      "name": "delete_record",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Delete a record of the selected patient (or the patient named) — or, with all: true, EVERY record of that kind (\"delete all medications\": no record, no other field). Shows what will be deleted and asks the provider to confirm; nothing is deleted until they do.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "medication"
+            ]
+          },
+          "record": {
+            "type": "string",
+            "description": "One record: its id if you have it, otherwise its name/title as the user said it. Leave out with all: true"
+          },
+          "all": {
+            "type": "boolean",
+            "description": "true only when the provider asked to delete ALL of them (\"delete all medications\")"
+          },
+          "patient": {
+            "type": "string",
+            "description": "The patient the provider named, when not the selected one — they are selected first"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    {
+      "name": "list_records",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "The SELECTED PATIENT's (or the named patient's) records of one kind (with ids), shown in their Summary tab — to answer questions about that patient's records or find a record's id. Not for the provider's own schedule (get_provider_overview).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "medication"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Only records with this status, e.g. Active, Open, Due"
+          },
+          "search": {
+            "type": "string",
+            "description": "Only records with these words in them (a drug, a condition, a title) — to search or get one"
+          },
+          "patient": {
+            "type": "string",
+            "description": "The patient the provider named, when not the selected one — they are selected first"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    {
+      "name": "open_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Open a page or a Summary tab: dashboard (Dashboard), patients (Patients), inbox (Inbox), summary (Summary), my-appointments (My Appointments), configuration (Configuration), summary-ai (AI Summary), summary-medication (Medications), summary-diagnosis (Diagnoses), summary-task (Tasks), summary-recall (Recalls), summary-appointment (Appointments), inbox-all (Inbox — All), inbox-lab (Inbox — Lab), inbox-radiology (Inbox — Radiology), inbox-referral (Inbox — Referrals), inbox-discharge (Inbox — Discharge Summary).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string",
+            "enum": [
+              "dashboard",
+              "patients",
+              "inbox",
+              "summary",
+              "my-appointments",
+              "configuration",
+              "summary-ai",
+              "summary-medication",
+              "summary-diagnosis",
+              "summary-task",
+              "summary-recall",
+              "summary-appointment",
+              "inbox-all",
+              "inbox-lab",
+              "inbox-radiology",
+              "inbox-referral",
+              "inbox-discharge"
+            ],
+            "description": "Page id"
+          }
+        },
+        "required": [
+          "page"
+        ]
+      }
+    },
+    {
+      "name": "go_back",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Go back to the previous screen (in the Inbox: close the open record).",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "scroll_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Scroll the current page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "top",
+              "bottom"
+            ]
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      }
+    },
+    {
+      "name": "control_list",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Search, filter or page the list on screen (see CONTEXT: list on screen), e.g. {\"filter\": \"Status\", \"value\": \"Active\"}, {\"page\": \"next\"}, {\"search\": \"khan\"}, {\"clear\": true}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "search": {
+            "type": "string",
+            "description": "Text to search for; \"\" clears the search"
+          },
+          "filter": {
+            "type": "string",
+            "description": "A filter of the list, by its name"
+          },
+          "value": {
+            "type": "string",
+            "description": "The option to filter by; \"all\" removes that filter"
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Clear the search and every filter"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "next",
+                  "previous",
+                  "first",
+                  "last"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "fill_open_form",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Set fields on the form that is open now (see CONTEXT: open form and its values) — e.g. {\"frequency\": \"Twice daily\"}. Use it to answer a pending question or to change what the form holds. Arguments are the form's own field names, in the same formats as the add_* tools.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "clear_form_field",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Empty one field of the open form.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ]
+      }
+    },
+    {
+      "name": "save_open_form",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user asked to save the open form. If a save is already waiting for their confirmation, this is that confirmation and it saves; otherwise it checks the form and asks them to confirm.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "confirm_pending_action",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Carry out the pending save / delete / filing shown in CONTEXT. Call it ONLY when the user has just said yes / confirm / save / delete it in reply to that pending confirmation — never on your own initiative.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_pending_action",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user said no / cancel / stop: drop the pending confirmation or question and close the open form without saving.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "wait_for_more_speech",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "What was said is an unfinished fragment (cut off mid-sentence). Nothing is done; it is joined with what the user says next.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "not_my_task",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "SAID is not something your tools do (it belongs to another part of the app), or it is not an answer to the pending question or confirmation — hand it back to the master instead of guessing. Never use it for something your tools can do.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "better_agent": {
+            "type": "string",
+            "enum": [
+              "patients",
+              "dashboard",
+              "appointments",
+              "patient_appointments",
+              "medications",
+              "diagnoses",
+              "tasks",
+              "recalls",
+              "notes",
+              "summary",
+              "inbox"
+            ],
+            "description": "The agent it belongs to, if you know: patients, dashboard, appointments, patient_appointments, medications, diagnoses, tasks, recalls, notes, summary, inbox"
+          }
+        }
+      }
+    }
+  ]
+}

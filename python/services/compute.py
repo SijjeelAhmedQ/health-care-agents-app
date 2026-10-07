@@ -1,10 +1,11 @@
 """
 Where the AI runs — the top-level switch (Configuration → Where the AI runs).
 
-  local       speech recognition and the language model run on this computer (Omi / Parakeet, local Ollama)
+  local       speech recognition and the language model run on this computer (Omi / Parakeet, local
+              Ollama) — the only place Ollama is used
   remote      both run on a remote GPU server (python/kaggle/careflow_gpu_server.py, e.g. a Kaggle T4):
-              speech recognition as the `remote` STT engine, the language model through the bridge's
-              /ollama proxy — the app keeps talking to the bridge, the bridge forwards.
+              speech recognition as the `remote` STT engine, the language model served there by vLLM,
+              through the bridge's /vllm proxy — the app keeps talking to the bridge, the bridge forwards.
   openrouter  the language model is a cloud model on OpenRouter (through the bridge's /openrouter proxy,
               which adds the key — the browser never holds it); speech recognition stays on this computer.
 
@@ -23,10 +24,17 @@ import httpx
 
 COMPUTE_FILE = Path(__file__).resolve().parents[1] / "compute_settings.json"
 
+#: The places a language model can run. Any of them may be on at once: each agent picks its model from the
+#: ones that are (Configuration → Agents).
+PROVIDERS = ("local", "kaggle", "openrouter")
+#: A settings file from before providers could be combined: the one place its mode named.
+MODE_PROVIDER = {"local": "local", "remote": "kaggle", "openrouter": "openrouter"}
+
 
 @dataclass
 class ComputeSettings:
-    #: Where the language model runs: local | remote (the Kaggle GPU) | openrouter.
+    #: Where the MAIN language model runs (the master agent's, and the single assistant's): local | remote
+    #: (the Kaggle GPU) | openrouter.
     mode: str = "local"
     #: Where speech recognition runs: local | remote (the Kaggle GPU) — on its own, so Whisper on Kaggle
     #: can serve an OpenRouter model as well as Qwen there.
@@ -40,6 +48,9 @@ class ComputeSettings:
     #: OpenRouter: the API key (kept here only — this file is gitignored) and the model chosen.
     openrouter_key: str = ""
     openrouter_model: str = "openai/gpt-6-sol"
+    #: Which providers are on (any of PROVIDERS). Their models are offered to the agents; the bridge
+    #: forwards to each only while it is on.
+    providers: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> "ComputeSettings":
@@ -55,6 +66,13 @@ class ComputeSettings:
             settings.openrouter_key = os.environ["OPENROUTER_API_KEY"].strip()
         return settings
 
+    def __post_init__(self) -> None:
+        # Nothing said about providers: the one place the mode names.
+        self.providers = [p for p in self.providers if p in PROVIDERS] or [MODE_PROVIDER.get(self.mode, "local")]
+
+    def uses(self, provider: str) -> bool:
+        return provider in self.providers
+
     def save(self) -> None:
         COMPUTE_FILE.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
 
@@ -64,7 +82,7 @@ class ComputeSettings:
 
 
 def probe_remote(url: str, key: str) -> dict[str, Any]:
-    """The remote server's /health (speech model, GPU, Ollama's models), or an error that says why not."""
+    """The remote server's /health (speech models, GPU, the model vLLM serves), or an error that says why not."""
     try:
         from .netfix import install
 

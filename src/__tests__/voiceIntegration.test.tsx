@@ -122,9 +122,9 @@ describe('the assistant against the real application', () => {
   it('arguments that break the schema never reach the app — the error goes back and the model corrects itself', async () => {
     await renderAppAt('/summary/medication');
     await waitUntil(() => !!RecordRegistry.get('medication'));
-    const med = { medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' };
+    const med = { medicationName: 'Metformin', dosage: '500 mg', route: 'Oral', frequency: 'Twice daily' };
     model.then({ calls: [call('add_medications', { medications: [{ ...med, startDate: 'tomorrow' }] })] }, { calls: [call('add_medications', { medications: [{ ...med, startDate: '2026-09-25' }] })] });
-    await say('metformin 500 mg twice daily starting tomorrow');
+    await say('metformin 500 mg by mouth twice daily starting tomorrow');
     expect(model.requests).toHaveLength(3);
     expect(model.requests[1].filter((m) => m.role === 'tool')[0].content).toMatch(/startDate: use YYYY-MM-DD/);
     expect(inputValue('medicationName')).toBe('Metformin');
@@ -162,14 +162,18 @@ describe('the assistant against the real application', () => {
     await waitUntil(() => !findOlivia());
   }, TIMEOUT);
 
-  it('refuses to add anything while no patient is selected, and says why to the model', async () => {
+  it('no patient selected, away from Summary: nothing opens — the patient and everything missing are asked for at once', async () => {
     store.dispatch(setCurrentPatient(null));
     await renderAppAt('/dashboard');
     model.calls([call('add_medications', { medications: [{ medicationName: 'Aspirin' }] })], 'Please select a patient first.');
     await say('add aspirin');
-    expect(model.lastToolResults()[0]).toMatchObject({ ok: false });
-    expect(model.lastToolResults()[0].message).toMatch(/no patient is selected/i);
+    expect(store.getState().voice.response).toBe('Which patient should this medication be added to? I have the medication as Aspirin. Please provide the missing information: dose and frequency.');
+    expect(router.state.location.pathname).toBe('/dashboard');
     expect(pageText()).not.toContain('Add Medication');
+    // Told to the app directly (not the provider's words): the app itself refuses — no patient is selected.
+    const direct = await getVoiceController().runAction((r) => r.createRecords('medication', [{ medicationName: 'Aspirin' }]));
+    expect(direct).toMatchObject({ ok: false });
+    expect(direct.message).toMatch(/no patient is selected/i);
   }, TIMEOUT);
 
   it('selecting a patient opens their Summary', async () => {
@@ -249,21 +253,30 @@ describe('the assistant against the real application', () => {
     await renderAppAt('/patients');
     const med = { dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' };
     const tuesday = dayjs().day() < 2 ? dayjs().day(2) : dayjs().add(1, 'week').day(2);
-    model.then({
-      calls: [
-        call('add_care_plan', {
-          patient: 'Harry White',
-          medications: ['Metformin', 'Panadol', 'Gabapentin', 'Rituximab'].map((medicationName) => ({ medicationName, ...med })),
-          diagnoses: [{ description: 'Hypertension' }],
-          tasks: [{ title: 'Blood pressure monitoring', category: 'Monitoring' }],
-          recalls: [{ reason: 'Follow-up review', dueDate: dayjs().add(2, 'week').format('YYYY-MM-DD') }],
-          appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }],
-        }),
-      ],
-    });
-    await say('goto patients select Harry White and add medication metformin, panadol, gabapentin, rituximab 500 mg twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm');
-    await waitUntil(() => pageText().includes('Care plan (8)'));
+    const plan = (recallReason: string) =>
+      call('add_care_plan', {
+        patient: 'Harry White',
+        medications: ['Metformin', 'Panadol', 'Gabapentin', 'Rituximab'].map((medicationName) => ({ medicationName, ...med })),
+        diagnoses: [{ description: 'Hypertension' }],
+        tasks: [{ title: 'Blood pressure monitoring', category: 'Monitoring' }],
+        recalls: [{ reason: recallReason, dueDate: dayjs().add(2, 'week').format('YYYY-MM-DD') }],
+        appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }],
+      });
+    model.then({ calls: [plan('Follow-up review')] });
+    await say('goto patients select Harry White and add medication metformin, panadol, gabapentin, rituximab 500 mg by mouth twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm');
 
+    // The recall's reason was never said ("recall the patient after two weeks"): the Safety Agent removed the
+    // model's "Follow-up review" — and away from Summary nothing opens until the provider has said it.
+    expect(store.getState().voice.response).toBe('What is the reason for the recall?');
+    expect(router.state.location.pathname).toBe('/patients');
+    expect(pageText()).not.toContain('Care plan (');
+    const asked = store.getState().monitor.events.filter((e) => e.type === 'safety.blocked').flatMap((e) => e.findings ?? []);
+    expect(asked.map((f) => [f.field, f.value, f.action])).toContainEqual(['recall 1 · reason', 'Follow-up review', 'asked']);
+
+    // The provider says it: the whole care plan opens, complete, and waits for their yes.
+    model.then({ calls: [plan('Blood pressure review')] }, { content: 'Please review and confirm the care plan.' });
+    await say('blood pressure review');
+    await waitUntil(() => store.getState().voice.pendingConfirmation?.formId === 'care_plan');
     const patient = patientSelectors.selectById(store.getState(), store.getState().patients.currentPatientId ?? '')!;
     expect(patient.fullName).toBe('Harry White');
     expect(router.state.location.pathname.startsWith('/summary')).toBe(true);
@@ -273,10 +286,9 @@ describe('the assistant against the real application', () => {
     expect(values('duration')).toEqual(['30 days', '30 days', '30 days', '30 days']);
     expect(values('description')).toContain('Hypertension');
     expect(values('title')).toEqual(['Blood pressure monitoring']);
-    expect(values('reason')).toEqual(['Follow-up review', 'Follow-up']);
+    expect(values('reason')).toEqual(['Blood pressure review', 'Follow-up']);
     const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
     expect(kindTabs).toEqual(['Medication4', 'Diagnosis1', 'Task1', 'Recall1', 'Appointment1']);
-    expect(store.getState().voice.pendingConfirmation?.formId).toBe('care_plan');
 
     const owned = (kind: (typeof RECORD_KINDS)[number]) => (recordSlices[kind].selectors.selectAll(store.getState()) as Array<{ patientId: string }>).filter((r) => r.patientId === patient.id).length;
     const before = Object.fromEntries(RECORD_KINDS.map((k) => [k, owned(k)]));
@@ -303,10 +315,10 @@ describe('the assistant against the real application', () => {
       { calls: [call('fill_open_form', { dosage: '1000 mg' })] },
       // …and the rest of what was said still gets done.
       { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
-      { calls: [call('add_appointments', { appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }] })] },
+      { calls: [call('add_appointments', { appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '16:45', type: 'Follow-up', reason: 'Follow-up' }] })] },
       { content: 'Care plan ready.' },
     );
-    await say('add metformin 500 mg twice daily and panadol, create a task for blood pressure monitoring and a follow-up next Tuesday at 3 pm');
+    await say('add metformin 500 mg twice daily and panadol, create a task for blood pressure monitoring and a follow-up next Tuesday at 4:45 pm');
     await waitUntil(() => pageText().includes('Care plan (4)'));
     const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
     expect(kindTabs).toEqual(['Medication2', 'Task1', 'Appointment1']);
@@ -321,21 +333,21 @@ describe('the assistant against the real application', () => {
     await renderAppAt('/summary/medication');
     const tuesday = dayjs().day() < 2 ? dayjs().day(2) : dayjs().add(1, 'week').day(2);
     model.then(
-      { calls: [call('plan_steps', { steps: ['Add metformin 500 mg twice daily and Panadol', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday at 3 pm'] })] },
+      { calls: [call('plan_steps', { steps: ['Add metformin 500 mg twice daily and Panadol', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday at 5:15 pm'] })] },
       { calls: [call('add_medications', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }, { medicationName: 'Panadol' }] })] },
       { content: 'Medications added.' },
       { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
       { content: 'Task added.' },
-      { calls: [call('add_appointments', { appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }] })] },
+      { calls: [call('add_appointments', { appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '17:15', type: 'Follow-up', reason: 'Follow-up' }] })] },
       { content: 'Appointment added.' },
     );
-    await say('add metformin 500 mg twice daily and panadol, create a task for blood pressure monitoring and a follow-up next Tuesday at 3 pm');
+    await say('add metformin 500 mg twice daily and panadol, create a task for blood pressure monitoring and a follow-up next Tuesday at 5:15 pm');
     await waitUntil(() => pageText().includes('Care plan (4)'));
     const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
     expect(kindTabs).toEqual(['Medication2', 'Task1', 'Appointment1']);
     // Each step was its own request, told which step it is.
     const stepSaid = model.requests.map((m) => String(m.at(-1)?.content ?? '')).filter((c) => c.includes('request: step')).map((c) => c.match(/SAID: (.*)/)?.[1]);
-    expect(stepSaid).toEqual(['Add metformin 500 mg twice daily and Panadol', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday at 3 pm']);
+    expect(stepSaid).toEqual(['Add metformin 500 mg twice daily and Panadol', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday at 5:15 pm']);
     // Progress only — every step finished, nothing for the provider to tick.
     const plan = store.getState().voice.plan!;
     expect(plan.map((s) => s.status).every((s) => s === 'done' || s === 'waiting')).toBe(true);
@@ -398,18 +410,16 @@ describe('the assistant against the real application', () => {
       store.dispatch(setCurrentPatient(null));
     });
 
-    it('Example 1: the same three medications for each of four patients — a tab per patient, the three inside each, nothing saved', async () => {
+    it('Example 1: the same three medications for each of four patients — the dose said after the list is each drug\'s, even when the model gives it to one; nothing is asked', async () => {
       await renderAppAt('/dashboard');
-      model.then({
-        calls: [
-          call('add_medications', {
-            for_patients: FOUR,
-            medications: [{ medicationName: 'Panadol' }, { medicationName: 'Paracetamol' }, { medicationName: 'Gabapentin', dosage: '500 mg', frequency: 'Twice daily', duration: '50 days' }],
-          }),
-        ],
-      });
+      const each = { dosage: '500 mg', frequency: 'Twice daily', duration: '50 days' };
+      // The model leaves the list's dose off Panadol and Paracetamol: the Safety Agent gives it to them, from
+      // where the provider put it (after the list) — the model is not asked again, nor the provider.
+      model.then({ calls: [call('add_medications', { for_patients: FOUR, medications: [{ medicationName: 'Panadol' }, { medicationName: 'Paracetamol' }, { medicationName: 'Gabapentin', ...each }] })] });
       await say('Add the following medications to each of the four patients Liam Martin, Harry White, Lucas Martin and Lily Martin: Panadol, Paracetamol, Gabapentin 500 mg twice daily for 50 days');
       await waitUntil(() => pageText().includes('Add Medication (12)'));
+      expect(model.lastToolResults()[0].ok).toBe(true);
+      expect(store.getState().voice.response ?? '').not.toMatch(/at what dose|how often|which medication/i); // the provider was asked nothing
       expect(patientTabs()).toEqual(tabsFor(4));
       for (let n = 1; n <= 4; n++) {
         await openTab(n);
@@ -421,12 +431,12 @@ describe('the assistant against the real application', () => {
       for (const name of FOUR) {
         const mine = all.filter((v) => whose(v) === name);
         expect(mine.map((v) => v.medicationName)).toEqual(['Panadol', 'Paracetamol', 'Gabapentin']);
-        expect(mine[2]).toMatchObject({ dosage: '500 mg', frequency: 'Twice daily', duration: '50 days' });
-        expect(mine[0].dosage ?? '').toBe(''); // Gabapentin's dose stays with Gabapentin
+        for (const drug of mine) expect(drug).toMatchObject({ dosage: '500 mg', frequency: 'Twice daily', duration: '50 days' });
       }
       expect(pageText()).toContain('12 medications will be saved for 4 patients');
-      // Not saved: Panadol has no dose yet, so the provider is asked — the save waits for them.
-      expect(store.getState().voice.pendingSlot?.question).toMatch(/Panadol for Liam Martin/);
+      // Complete — and still not saved: it waits for the provider's yes.
+      expect(store.getState().voice.pendingSlot).toBeNull();
+      expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
     }, TIMEOUT);
 
     it('Example 2: a different time for each patient — each appointment stays with its patient, and is saved for them after "yes"', async () => {
@@ -545,14 +555,14 @@ describe('the assistant against the real application', () => {
         calls: [
           call('add_medications', {
             medications: [
-              { patient: 'Liam Martin', medicationName: 'Panadol' },
-              { patient: 'Harry White', medicationName: 'Metformin' },
+              { patient: 'Liam Martin', medicationName: 'Panadol', dosage: '1000 mg', frequency: 'Three times daily' },
+              { patient: 'Harry White', medicationName: 'Metformin', dosage: '850 mg', frequency: 'Once daily' },
               { patient: 'Lucas Martin', medicationName: 'Gabapentin', dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' },
             ],
           }),
         ],
       });
-      await say('Add Panadol to Liam Martin, Metformin to Harry White, and Gabapentin 500 mg twice daily for 30 days to Lucas Martin');
+      await say('All by mouth: Panadol 1000 mg three times a day to Liam Martin, Metformin 850 mg once a day to Harry White, and Gabapentin 500 mg twice daily for 30 days to Lucas Martin');
       await waitUntil(() => pageText().includes('Add Medication (3)'));
       expect(patientTabs()).toEqual(tabsFor(3));
       const all = entriesOf('medication');
@@ -569,7 +579,8 @@ describe('the assistant against the real application', () => {
     await renderAppAt('/summary/task');
     model.then({ calls: [call('add_tasks', { tasks: [{ title: 'BP check', patient: 'Harry White' }, { title: 'BP check', patient: 'Zzyzx Qwerty' }] })] });
     await say('create a task bp check for harry white and zzyzx qwerty');
-    expect(model.lastToolResults()[0].message).toMatch(/^Nothing was opened — No patient (matches|is called) "Zzyzx Qwerty"/);
+    // Asked before anything is searched or opened — the patient said is nobody on file.
+    expect(store.getState().voice.response).toBe('I couldn\'t find a patient named "Zzyzx Qwerty". Which patient do you mean?');
     expect(pageText()).not.toContain('Add Task');
   }, TIMEOUT);
 
@@ -603,8 +614,8 @@ describe('the assistant against the real application', () => {
 
   it('a record the model adds while the care plan is open joins it as a new tab', async () => {
     await renderAppAt('/summary/medication');
-    model.then({ calls: [call('add_care_plan', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }], tasks: [{ title: 'Blood pressure monitoring' }] })] });
-    await say('add metformin 500 mg twice daily and a task for blood pressure monitoring');
+    model.then({ calls: [call('add_care_plan', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', route: 'Oral', frequency: 'Twice daily' }], tasks: [{ title: 'Blood pressure monitoring' }] })] });
+    await say('add metformin 500 mg orally twice daily and a task for blood pressure monitoring');
     await waitUntil(() => pageText().includes('Care plan (2)'));
     const kindTabs = () => [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
     // Only the kinds that were said get a tab.

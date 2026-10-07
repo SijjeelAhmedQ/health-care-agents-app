@@ -11,32 +11,6 @@
   .ibx-voice-setting > span, .ibx-voice-help-text { display: none; }
   .ibx-head-sep { display: none; }
 }
-/* ---- selected patient only / all patients ------------------------------- */
-.ibx-scope-toggle {
-  display: inline-flex; align-items: center; gap: 7px; height: 36px; max-width: 280px; padding: 0 8px 0 13px; border-radius: 999px;
-  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary);
-  font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
-  transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
-}
-.ibx-scope-toggle:hover { border-color: var(--color-border-strong); background: var(--color-surface-subtle); }
-.ibx-scope-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
-.ibx-scope-toggle svg { flex-shrink: 0; }
-.ibx-scope-toggle-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.ibx-scope-toggle.is-on { color: var(--color-primary); background: var(--color-primary-soft); border-color: var(--color-primary-soft-strong); font-weight: 600; }
-/* A small switch inside the pill says plainly that it is on or off. */
-.ibx-scope-toggle-track {
-  position: relative; flex-shrink: 0; width: 26px; height: 16px; border-radius: 999px; background: var(--color-border-strong);
-  transition: background var(--duration-fast) var(--ease);
-}
-.ibx-scope-toggle-track span {
-  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.2);
-  transition: transform var(--duration-fast) var(--ease);
-}
-.ibx-scope-toggle.is-on .ibx-scope-toggle-track { background: var(--color-primary); }
-.ibx-scope-toggle.is-on .ibx-scope-toggle-track span { transform: translateX(10px); }
-@media (max-width: 767.98px) {
-  .ibx-scope-toggle { max-width: 200px; }
-}
 
 /* ---- row numbers while the microphone is on ------------------------------ */
 .ibx-row-pos {
@@ -50,5 +24,3 @@
 @keyframes ibxPosIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: none; } }
 
 /* The pill's colour, icon and words already say which scope is on — no switch drawn inside it. */
-.ibx-scope-toggle-track { display: none; }
-.ibx-scope-toggle { padding-right: 13px; }

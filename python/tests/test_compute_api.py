@@ -1,9 +1,9 @@
 """
 Where the AI runs — the two setups the provider uses, and this computer:
 
-    Kaggle GPU            Whisper on Kaggle  + Qwen 4B / 9B on Kaggle
+    Kaggle GPU            Whisper on Kaggle  + Qwen on Kaggle, served by vLLM
     Kaggle + OpenRouter   Whisper on Kaggle  + any OpenRouter model that calls tools
-    This computer         Omi Med STT here   + Qwen here
+    This computer         Omi Med STT here   + Qwen here, in Ollama (the only place Ollama is used)
 
 The Kaggle server and OpenRouter are stood in for (no network); the settings file is a temporary one.
 
@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import app as bridge  # noqa: E402
 
 KAGGLE = "https://gpu.trycloudflare.com"
-HEALTH = {"ok": True, "model": "whisper-large-v3-turbo", "device": "cuda", "gpu": "Tesla T4", "engines": {"whisper": {}, "omi": {}}, "ollama": {"ok": True, "models": ["qwen3.5:4b", "qwen3.5:9b"]}}
+HEALTH = {"ok": True, "model": "whisper-large-v3-turbo", "device": "cuda", "gpu": "Tesla T4", "engines": {"whisper": {}, "omi": {}}, "llm": {"ok": True, "engine": "vllm", "models": ["qwen3.5:4b"]}}
 
 
 class ComputeApiTest(unittest.TestCase):
@@ -108,10 +108,117 @@ class ComputeApiTest(unittest.TestCase):
         self.assertEqual(self.stt_moves, [])
 
     def test_qwen_on_kaggle_needs_the_servers_language_model(self):
-        self.health = {**HEALTH, "ollama": {"ok": False, "error": "Ollama is not running"}}
-        self.assertEqual(self.put(mode="remote", speech="remote", remote_url=KAGGLE, remote_key="k").status_code, 409)
+        self.health = {**HEALTH, "llm": {"ok": False, "engine": "vllm", "error": "vLLM is not running"}}
+        res = self.put(mode="remote", speech="remote", remote_url=KAGGLE, remote_key="k")
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("vLLM is not running", res.json()["detail"])
         # …but Whisper alone (with OpenRouter thinking) does not need it.
         self.assertEqual(self.put(mode="openrouter", speech="remote", remote_url=KAGGLE, remote_key="k", openrouter_key="sk-or-x").status_code, 200)
+
+    def test_the_tunnel_giving_up_on_a_long_request_is_not_sent_again(self):
+        """524: the Kaggle server got the request and still works on it — a copy would queue behind it on the GPU."""
+        import httpx
+
+        bridge.compute = replace(bridge.compute, mode="remote", providers=["kaggle"], remote_url=KAGGLE, remote_key="k")
+        calls: list[str] = []
+        status = {"code": 524}
+
+        def kaggle(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if status["code"] == 200:
+                return httpx.Response(200, json={"choices": []})
+            return httpx.Response(status["code"], text="<html>cloudflare</html>", headers={"content-type": "text/html"})
+
+        original = bridge.REMOTE_TRANSPORT
+        bridge.REMOTE_TRANSPORT = lambda: httpx.MockTransport(kaggle)
+        try:
+            res = self.client.post("/vllm/v1/chat/completions", json={"model": "qwen3.5:9b", "messages": []})
+            self.assertEqual(res.status_code, 504)
+            self.assertIn("still working on it", res.json()["detail"])
+            self.assertEqual(len(calls), 1)
+            # A 502 page (the request never got through) is still tried again.
+            calls.clear()
+            status["code"] = 502
+            self.assertEqual(self.client.post("/vllm/v1/chat/completions", json={"model": "qwen3.5:9b", "messages": []}).status_code, 502)
+            self.assertEqual(len(calls), 3)
+        finally:
+            bridge.REMOTE_TRANSPORT = original
+
+    def test_a_kaggle_server_that_still_runs_ollama_is_not_used_for_the_language_model(self):
+        old = {k: v for k, v in HEALTH.items() if k != "llm"}
+        self.health = {**old, "ollama": {"ok": True, "models": ["qwen3.5:4b"]}}
+        res = self.put(mode="remote", speech="remote", remote_url=KAGGLE, remote_key="k")
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("vLLM", res.json()["detail"])
+        self.assertEqual(bridge.compute.mode, "local")
+
+    def test_the_language_model_proxies_follow_the_configured_place(self):
+        """This computer → Ollama; the Kaggle GPU → vLLM there (with its key); Ollama is refused elsewhere."""
+        sent: list[tuple[str, dict]] = []
+
+        async def fake_forward(target, headers, request, remote, where):
+            sent.append((target, dict(headers)))
+            return bridge.Response(content=b"{}", media_type="application/json")
+
+        original = bridge.forward_llm
+        bridge.forward_llm = fake_forward
+        try:
+            self.assertEqual(self.client.post("/ollama/api/chat", json={}).status_code, 200)
+            self.assertEqual(sent[-1][0], f"{bridge.LOCAL_OLLAMA}/api/chat")
+            self.assertEqual(self.client.post("/vllm/v1/chat/completions", json={}).status_code, 200)
+            self.assertEqual(sent[-1][0], f"{bridge.LOCAL_VLLM}/v1/chat/completions")
+
+            self.put(mode="remote", speech="remote", remote_url=KAGGLE, remote_key="k")
+            self.assertEqual(self.client.post("/vllm/v1/chat/completions", json={}).status_code, 200)
+            self.assertEqual(sent[-1][0], f"{KAGGLE}/vllm/v1/chat/completions")
+            self.assertEqual(sent[-1][1]["X-CareFlow-Key"], "k")
+            refused = self.client.post("/ollama/api/chat", json={})
+            self.assertEqual(refused.status_code, 409)
+            self.assertIn("Ollama is used only for This computer", refused.json()["detail"])
+
+            self.put(mode="openrouter", speech="remote", remote_url=KAGGLE, remote_key="k", openrouter_key="sk-or-x")
+            self.assertEqual(self.client.post("/ollama/api/chat", json={}).status_code, 409)
+            self.assertEqual(len(sent), 3)  # neither refused request went anywhere
+        finally:
+            bridge.forward_llm = original
+
+    def test_all_three_providers_at_once_each_agent_can_use_any(self):
+        """This computer + Kaggle + OpenRouter together: Ollama, Kaggle's vLLM and OpenRouter all answer."""
+        res = self.put(mode="local", providers=["local", "kaggle", "openrouter"], speech="remote", remote_url=KAGGLE, remote_key="k", remote_engine="omi", openrouter_key="sk-or-x")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["providers"], ["local", "kaggle", "openrouter"])
+        self.assertEqual(self.stt_moves[-1], {"engine": "remote", "remote_engine": "omi"})
+        sent: list[str] = []
+
+        async def fake_forward(target, headers, request, remote, where):
+            sent.append(target)
+            return bridge.Response(content=b"{}", media_type="application/json")
+
+        original = bridge.forward_llm
+        bridge.forward_llm = fake_forward
+        try:
+            self.assertEqual(self.client.post("/ollama/api/chat", json={}).status_code, 200)
+            self.assertEqual(self.client.post("/vllm/v1/chat/completions", json={}).status_code, 200)
+        finally:
+            bridge.forward_llm = original
+        self.assertEqual(sent, [f"{bridge.LOCAL_OLLAMA}/api/chat", f"{KAGGLE}/vllm/v1/chat/completions"])
+        # Saved, and read back the same way.
+        self.assertEqual(compute_mod.ComputeSettings.load().providers, ["local", "kaggle", "openrouter"])
+
+    def test_providers_are_checked_before_anything_moves(self):
+        # The main model must run on a provider that is on…
+        self.assertEqual(self.put(mode="openrouter", providers=["local"]).status_code, 400)
+        # …Kaggle on means its language model must be ready…
+        self.health = {**HEALTH, "llm": {"ok": False, "error": "vLLM is not serving qwen3.5:9b yet"}}
+        self.assertEqual(self.put(mode="local", providers=["local", "kaggle"], remote_url=KAGGLE, remote_key="k").status_code, 409)
+        # …OpenRouter on needs a key that works.
+        self.key_ok = False
+        self.assertEqual(self.put(mode="local", providers=["local", "openrouter"], openrouter_key="sk-or-bad").status_code, 409)
+        self.assertEqual(bridge.compute.providers, ["local"])  # nothing switched
+
+    def test_an_older_settings_file_has_the_one_provider_its_mode_named(self):
+        compute_mod.COMPUTE_FILE.write_text(json.dumps({"mode": "remote", "remote_url": KAGGLE}), encoding="utf-8")
+        self.assertEqual(compute_mod.ComputeSettings.load().providers, ["kaggle"])
 
     def test_back_to_this_computer(self):
         self.put(mode="remote", speech="remote", remote_url=KAGGLE, remote_key="k")

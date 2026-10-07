@@ -10,6 +10,14 @@ type NavigateFn =(to: string | number, options?: { replace?: boolean; state?: un
 let navigateImpl: NavigateFn | null = null;
 let currentPathname = '/';
 
+/**
+ * Pages the app never leaves on its own. Agent Monitoring is watched while the agents work: an assistant
+ * command ("open the patient's summary", selecting a patient, a dictated note) must not take the screen
+ * away from it. Only the user's own clicks leave it.
+ */
+const STAY_ON = ['/agent-monitor'];
+const pinned = () => typeof window !== 'undefined' && STAY_ON.some((p) => window.location.pathname.startsWith(p));
+
 /** Scroll targets registered by pages (sections/anchors) so voice can "scroll to vitals". */
 const scrollTargets = new Map<string, { label: string; element: HTMLElement }>();
 
@@ -21,13 +29,19 @@ export const NavigationRegistry = {
     currentPathname = p;
   },
   pathname: () => currentPathname,
-  navigate(to: string, options?: { replace?: boolean; state?: unknown }) {
+  /** Navigate (false: the page on screen is one the app never leaves on its own — nothing happened). */
+  navigate(to: string, options?: { replace?: boolean; state?: unknown }): boolean {
+    if (pinned()) return false;
     if (!navigateImpl) throw new Error('Navigation not ready');
     navigateImpl(to, options);
+    return true;
   },
   back() {
+    if (pinned()) return;
     navigateImpl?.(-1);
   },
+  /** The page on screen is one the app does not navigate away from by itself (Agent Monitoring). */
+  isPinned: () => pinned(),
   registerScrollTarget(id: string, label: string, element: HTMLElement) {
     scrollTargets.set(id.toLowerCase(), { label, element });
     return () => scrollTargets.delete(id.toLowerCase());

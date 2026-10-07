@@ -14,6 +14,9 @@ A small FastAPI service in front of the two local models:
   GET  /api/config/stt            the selected Omi Med STT settings, every model and backend available here
   PUT  /api/config/stt            select another model / backend / timings (saved to stt_settings.json)
   GET  /api/health runtime status
+  GET  /.well-known/agent-card.json   the Master Agent's A2A Agent Card (every agent listed as its skill)
+  GET  /agents                        every agent, with the URL of its card
+  GET  /agents/{id}/agent-card.json   one agent's card, built from src/agents/<id>-agent/SKILL.md
 
 Run with:
 
@@ -42,7 +45,8 @@ from dataclasses import replace
 
 from fastapi import Request, Response
 
-from services.compute import OPENROUTER, ComputeSettings, openrouter_headers, probe_openrouter, probe_remote
+from services import agent_cards
+from services.compute import MODE_PROVIDER, OPENROUTER, PROVIDERS, ComputeSettings, openrouter_headers, probe_openrouter, probe_remote
 from services.netfix import install as install_netfix
 from services.diagnostics import RECORDINGS_DIR, Recorder
 from services.qwen import QwenChat
@@ -100,6 +104,50 @@ def health() -> dict[str, Any]:
         "stt": {**stt_engine.info(), "streaming": "/ws/stt", "vad": _vad.name, "vad_warning": vad_warning, "refiner": refiner.info() if refiner else None},
         "llm": {"engine": llm.name, "model": llm.model, "ready": llm.is_ready()},
     }
+
+
+def _base_url(request: Request) -> str:
+    """Where this bridge is reached from — the cards' links point back at the same host and port."""
+    return str(request.base_url).rstrip("/")
+
+
+@app.get("/.well-known/agent-card.json")
+@app.get("/.well-known/agent.json", include_in_schema=False)  # the name earlier A2A versions used
+def master_agent_card(request: Request) -> dict[str, Any]:
+    """The assistant's front door: the Master Agent, with every agent it hands work to listed as one of its skills."""
+    master = agent_cards.find("master")
+    if master is None:
+        raise HTTPException(404, f"No master-agent/SKILL.md under {agent_cards.AGENTS_DIR}.")
+    return agent_cards.agent_card(master, _base_url(request))
+
+
+@app.get("/agents")
+def list_agents(request: Request) -> dict[str, Any]:
+    return agent_cards.index(_base_url(request))
+
+
+def _agent(agent_id: str) -> agent_cards.Skill:
+    skill = agent_cards.find(agent_id)
+    if skill is None:
+        known = ", ".join(s.id for s in agent_cards.agents())
+        raise HTTPException(404, f'No agent "{agent_id}". Agents: {known}.')
+    return skill
+
+
+@app.get("/agents/{agent_id}/agent-card.json")
+@app.get("/agents/{agent_id}")
+def agent_card(agent_id: str, request: Request) -> dict[str, Any]:
+    return agent_cards.agent_card(_agent(agent_id), _base_url(request))
+
+
+@app.get("/agents/{agent_id}/agent.json")
+def agent_json(agent_id: str) -> dict[str, Any]:
+    """The agent's agent.json as generated from the app's code: every tool, and whether it mutates."""
+    skill = _agent(agent_id)
+    data = agent_cards.agent_json(skill)
+    if data is None:
+        raise HTTPException(404, f'src/agents/{skill.folder}/agent.json is missing — run "npm run agents:json".')
+    return data
 
 
 @app.websocket("/ws/stt")
@@ -237,6 +285,8 @@ compute = ComputeSettings.load()
 install_netfix()
 REMOTE_TRANSPORT = lambda: httpx.AsyncHTTPTransport(retries=1)  # noqa: E731
 LOCAL_OLLAMA = os.getenv("CAREFLOW_LLM_URL", "http://127.0.0.1:11434")
+#: A vLLM server of your own (this machine, WSL, your LAN) — /vllm reaches it while the AI runs here.
+LOCAL_VLLM = os.getenv("CAREFLOW_VLLM_URL", "http://127.0.0.1:8000")
 #: Speech settings that belong to this computer (restored when switching back from the remote GPU).
 LOCAL_STT_FIELDS = ("engine", "repo", "gguf_file", "backend", "threads", "precision")
 
@@ -244,19 +294,20 @@ LOCAL_STT_FIELDS = ("engine", "repo", "gguf_file", "backend", "threads", "precis
 async def compute_status() -> dict[str, Any]:
     # The Kaggle server matters whenever it serves either model (speech, or the language model).
     remote = None
-    if compute.mode == "remote" or compute.speech == "remote":
+    if compute.uses("kaggle") or compute.speech == "remote":
         try:
             remote = await run_in_threadpool(probe_remote, compute.remote_url, compute.remote_key)
         except RuntimeError as exc:
             remote = {"ok": False, "error": str(exc)}
     openrouter = None
-    if compute.mode == "openrouter":
+    if compute.uses("openrouter"):
         try:
             openrouter = await run_in_threadpool(probe_openrouter, compute.openrouter_key)
         except RuntimeError as exc:
             openrouter = {"ok": False, "error": str(exc)}
     return {
         "mode": compute.mode,
+        "providers": compute.providers,
         "speech": compute.speech,
         "remote_url": compute.remote_url,
         "remote_engine": compute.remote_engine,
@@ -276,7 +327,7 @@ async def get_compute() -> dict[str, Any]:
 
 
 class ComputeBody(BaseModel):
-    #: Where the language model runs: local (Ollama here), remote (Ollama on the Kaggle GPU) or openrouter.
+    #: Where the language model runs: local (Ollama here), remote (vLLM on the Kaggle GPU) or openrouter.
     mode: str
     #: Where speech recognition runs: local, or remote (the Kaggle GPU). Left out: with the language model.
     speech: str = ""
@@ -285,6 +336,8 @@ class ComputeBody(BaseModel):
     remote_engine: str = "whisper"
     openrouter_key: str = ""
     openrouter_model: str = ""
+    #: Which providers are on — any of local, kaggle, openrouter. Left out: the one `mode` names.
+    providers: list[str] | None = None
 
 
 async def restore_local_stt() -> None:
@@ -304,8 +357,10 @@ async def checked_kaggle(url: str, key: str, need_llm: bool, engine: str | None)
         health = await run_in_threadpool(probe_remote, url, key)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=f"{exc}. Nothing was switched.") from exc
-    if need_llm and not (health.get("ollama") or {}).get("ok"):
-        raise HTTPException(status_code=409, detail=f"The Kaggle server's language model is not ready: {(health.get('ollama') or {}).get('error', 'no Ollama')}. Nothing was switched.")
+    llm = health.get("llm") or {}
+    if need_llm and not llm.get("ok"):
+        why = llm.get("error") or ("it runs an old careflow_gpu_server.py (no /vllm) — import health-care-agents-app/python/kaggle/careflow_kaggle.ipynb into Kaggle and Run All" if "ollama" in health else "no language model")
+        raise HTTPException(status_code=409, detail=f"The Kaggle server's language model is not ready: {why}. Nothing was switched.")
     engines = health.get("engines") or {}
     if engine and engines and engine not in engines:
         raise HTTPException(status_code=409, detail=f"The Kaggle server has no {engine} speech model (it loaded {', '.join(engines)}). Nothing was switched.")
@@ -334,24 +389,29 @@ async def check_kaggle(body: KaggleCheckBody) -> dict[str, Any]:
 async def put_compute(body: ComputeBody) -> dict[str, Any]:
     """
     Where the two models run. Speech recognition: this computer or the Kaggle GPU. The language model:
-    this computer (Ollama), the Kaggle GPU (Ollama there, through /ollama) or OpenRouter (through
+    this computer (Ollama), the Kaggle GPU (vLLM there, through /vllm) or OpenRouter (through
     /openrouter). Everything is checked first; nothing moves unless all of it can.
     """
     global compute
     if body.mode not in ("local", "remote", "openrouter"):
         raise HTTPException(status_code=400, detail="mode is local, remote or openrouter")
+    providers = list(dict.fromkeys(body.providers if body.providers is not None else [MODE_PROVIDER[body.mode]]))
+    if not providers or any(p not in PROVIDERS for p in providers):
+        raise HTTPException(status_code=400, detail="providers: one or more of local, kaggle, openrouter")
+    if MODE_PROVIDER[body.mode] not in providers:
+        raise HTTPException(status_code=400, detail=f"The main model runs on {MODE_PROVIDER[body.mode]}, which is not switched on")
     speech = body.speech or ("remote" if body.mode == "remote" else "local")
     if speech not in ("local", "remote"):
         raise HTTPException(status_code=400, detail="speech is local or remote")
 
     url = body.remote_url.strip().rstrip("/") or compute.remote_url
     key = body.remote_key or compute.remote_key  # an empty key field keeps the saved one
-    if body.mode == "remote" or speech == "remote":
-        await checked_kaggle(url, key, need_llm=body.mode == "remote", engine=body.remote_engine if speech == "remote" else None)
+    if "kaggle" in providers or speech == "remote":
+        await checked_kaggle(url, key, need_llm="kaggle" in providers, engine=body.remote_engine if speech == "remote" else None)
 
     or_key = body.openrouter_key.strip() or compute.openrouter_key
     or_model = body.openrouter_model.strip() or compute.openrouter_model
-    if body.mode == "openrouter":
+    if "openrouter" in providers:
         if not or_key:
             raise HTTPException(status_code=400, detail="Give your OpenRouter API key (openrouter.ai/keys)")
         try:
@@ -375,26 +435,23 @@ async def put_compute(body: ComputeBody) -> dict[str, Any]:
         local_stt=local_stt,
         openrouter_key=or_key,
         openrouter_model=or_model,
+        providers=providers,
     )
     compute.save()
     return await compute_status()
 
 
-@app.api_route("/ollama/{path:path}", methods=["GET", "POST", "DELETE"])
-async def ollama_proxy(path: str, request: Request) -> Response:
+async def forward_llm(target: str, headers: dict[str, str], request: Request, remote: bool, where: str) -> Response:
     """
-    The app's language model endpoint: Ollama's own API, forwarded to this computer's Ollama or to the
-    remote GPU server's — so switching where the AI runs changes no URL in the app.
+    Forward one language-model request. A free tunnel drops a request now and then (its own 502/503 page,
+    the request never reached the server): try again — a chat request has no side effects. A 504/524 page
+    is different: the server got the request and is still working on it (the tunnel only stopped waiting),
+    so sending it again would only queue a second copy behind the first on the GPU. The server's own
+    answers (4xx, JSON) are passed on as they are.
     """
-    if compute.mode == "remote":
-        target, headers = f"{compute.remote_url}/ollama/{path}", compute.remote_headers()
-    else:
-        target, headers = f"{LOCAL_OLLAMA}/{path}", {}
     headers["Content-Type"] = request.headers.get("content-type", "application/json")
     body = await request.body()
-    # A free tunnel drops a request now and then (its own 502/503/504 page): try again — a chat request
-    # has no side effects. The server's own answers (4xx, JSON) are passed on as they are.
-    attempts = 3 if compute.mode == "remote" else 1
+    attempts = 3 if remote else 1
     for attempt in range(attempts):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=15.0), transport=REMOTE_TRANSPORT()) as client:
@@ -402,15 +459,40 @@ async def ollama_proxy(path: str, request: Request) -> Response:
         except httpx.HTTPError as exc:
             if attempt + 1 < attempts:
                 continue
-            raise HTTPException(status_code=502, detail=f"The language model at {'the remote GPU server' if compute.mode == 'remote' else LOCAL_OLLAMA} is not reachable: {exc}") from exc
-        tunnel_dropped = res.status_code in (502, 503, 504, 524) and not res.headers.get("content-type", "").startswith("application/json")
+            raise HTTPException(status_code=502, detail=f"The language model at {where} is not reachable: {exc}") from exc
+        tunnel_page = not res.headers.get("content-type", "").startswith("application/json")
+        tunnel_dropped = res.status_code in (502, 503) and tunnel_page
+        if tunnel_page and res.status_code in (504, 524):
+            raise HTTPException(status_code=504, detail=f"{where} took longer than the tunnel waits (100 s) and the tunnel gave up — the server is still working on it. Update the Kaggle notebook (careflow_kaggle.ipynb): its server keeps long requests open.")
         if tunnel_dropped and attempt + 1 < attempts:
             await asyncio.sleep(2)
             continue
         if tunnel_dropped:
             raise HTTPException(status_code=502, detail=f"The tunnel to the remote GPU server dropped the request {attempts} times ({res.status_code}). Check that the Kaggle notebook is still running.")
         return Response(content=res.content, status_code=res.status_code, media_type=res.headers.get("content-type"))
-    raise HTTPException(status_code=502, detail="The remote GPU server did not answer")
+    raise HTTPException(status_code=502, detail=f"{where} did not answer")
+
+
+@app.api_route("/ollama/{path:path}", methods=["GET", "POST", "DELETE"])
+async def ollama_proxy(path: str, request: Request) -> Response:
+    """
+    This computer's Ollama — and only while the AI runs on this computer. Ollama is not used for any other
+    place the language model can run: the Kaggle GPU serves it with vLLM (/vllm), OpenRouter is /openrouter.
+    """
+    if not compute.uses("local"):
+        raise HTTPException(status_code=409, detail="This computer is switched off in Configuration → Models: Ollama is used only for This computer.")
+    return await forward_llm(f"{LOCAL_OLLAMA}/{path}", {}, request, remote=False, where=LOCAL_OLLAMA)
+
+
+@app.api_route("/vllm/{path:path}", methods=["GET", "POST"])
+async def vllm_proxy(path: str, request: Request) -> Response:
+    """
+    A vLLM server's OpenAI-compatible API (/vllm/v1/chat/completions, /vllm/v1/models): the Kaggle GPU's,
+    with its key added here, while the AI runs there; otherwise your own vLLM server (CAREFLOW_VLLM_URL).
+    """
+    if compute.uses("kaggle"):
+        return await forward_llm(f"{compute.remote_url}/vllm/{path}", compute.remote_headers(), request, remote=True, where="the remote GPU server")
+    return await forward_llm(f"{LOCAL_VLLM}/{path}", {}, request, remote=False, where=LOCAL_VLLM)
 
 
 @app.api_route("/openrouter/{path:path}", methods=["GET", "POST"])

@@ -1,0 +1,201 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "planning",
+  "agent": "planning",
+  "name": "Planning Agent",
+  "skill": "src/agents/planning-agent/SKILL.md",
+  "version": "1.1",
+  "role": "requirement-gathering",
+  "description": "CareFlow's Requirement Gathering / Planning Agent. Before any action runs, it works out the OPERATION of each task (add, change, delete one, delete all, show, select or create a patient) and what that operation needs from what the provider SAID — so the app asks only for what that operation is missing, never guesses. Never runs an action and never fills a value. Use after the master assigns tasks that select a patient, add, change, delete or show records, or book appointments, and to read the provider's answer to the question it asked.",
+  "toolSummary": {
+    "total": 2,
+    "mutating": 0,
+    "screenOnly": 0,
+    "readOnly": 0,
+    "reports": 2,
+    "mutatingTools": []
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": [
+    {
+      "name": "submit_requirements",
+      "executionType": "REPORT",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "description": "Report what the provider SAID each task needs: the operation, the patient they named, and — by operation — the records to add (only the values said), the record to change and only the fields being changed, the record to delete or that ALL are deleted. Leave out everything not said — the app asks the provider for it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task": {
+                  "type": "string",
+                  "description": "The task id (t1, t2 …) from TASKS — always give it"
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "select_patient",
+                    "create_patient",
+                    "add_records",
+                    "update_record",
+                    "delete_records",
+                    "view_records",
+                    "other"
+                  ]
+                },
+                "patient": {
+                  "type": "string",
+                  "description": "The patient exactly as SAID, when the provider named one for this task; leave out when not said"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "medication",
+                    "diagnosis",
+                    "task",
+                    "recall",
+                    "appointment",
+                    "patient"
+                  ],
+                  "description": "update_record / delete_records / view_records: the kind of record"
+                },
+                "record": {
+                  "type": "string",
+                  "description": "update_record / delete_records (one): the record as SAID (\"Gabapentin\")"
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "one",
+                    "all"
+                  ],
+                  "description": "delete_records: all when the provider said all / every (\"delete all medications\") — then no record"
+                },
+                "changes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "description": "update_record: ONLY the fields being changed, with the new value SAID ({\"frequency\": \"twice daily\"})"
+                },
+                "records": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "medication",
+                          "diagnosis",
+                          "task",
+                          "recall",
+                          "appointment"
+                        ]
+                      },
+                      "values": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "boolean"
+                            }
+                          ]
+                        },
+                        "description": "Only the values the provider SAID for this record, under the FIELDS names — never one they did not say"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  },
+                  "description": "add_records: one entry per record asked for — also when nothing about it was said (\"add medication\": kind medication, no values)"
+                },
+                "values": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "description": "Shorthand for ONE record: its values (with kind) instead of records"
+                },
+                "patient_details": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "description": "create_patient: the new patient's details SAID"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          }
+        },
+        "required": [
+          "tasks"
+        ]
+      }
+    },
+    {
+      "name": "not_an_answer",
+      "executionType": "REPORT",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "description": "SAID does not answer the question asked — the provider asked for something else.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

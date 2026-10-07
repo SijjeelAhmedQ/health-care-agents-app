@@ -952,6 +952,10 @@ body:has(.ant-modal-wrap:not([style*="display: none"])) .voice-fab { display: no
 .va-plan li.is-running .va-plan-mark { background: var(--color-primary-soft); color: var(--color-primary); }
 .va-plan li.is-done .va-plan-mark { background: var(--color-success-soft, #e3f7ec); color: var(--color-success, #0f9d63); }
 .va-plan li.is-waiting .va-plan-mark { background: var(--color-warning-soft); color: var(--color-warning); }
+.va-plan li.is-failed .va-plan-mark { background: var(--color-error-soft); color: var(--color-error); }
+.va-plan li.is-failed, .va-plan li.is-cancelled { color: var(--color-text-muted); }
+.va-plan li.is-cancelled > span:last-child { text-decoration: line-through; }
+.va-plan-agent { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 10.5px; font-weight: 600; background: var(--color-surface-muted); color: var(--color-text-muted); }
 
 .va-card { border-radius: 18px; padding: 14px; font-size: 13px; border: 1px solid var(--color-border); background: var(--color-surface); box-shadow: var(--shadow-sm); animation: riseIn 0.28s var(--ease) both; }
 .va-card-head { display: flex; align-items: center; gap: 8px; font-family: var(--font-display); font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--color-ink); }
@@ -1407,8 +1411,8 @@ body:has(.ant-modal-wrap:not([style*="display: none"])) .voice-fab { display: no
 }
 
 @media (max-width: 1199.98px) { :root { --right-dock-width: 340px; } }
-@media (max-width: 991.98px) {
-  /* Too little room to split the screen: the dock covers the page instead. */
+@media (max-width: 1279.98px) {
+  /* Too little room to split the screen (the page would be squeezed under ~600px): the dock covers it instead. */
   :root { --right-dock-width: min(420px, 100vw); }
   .app-shell.has-right-dock .app-content,
   .app-shell.has-right-dock .app-header.app-header { padding-inline-end: var(--content-gutter); }
@@ -1438,3 +1442,64 @@ body.is-resizing-dock { cursor: col-resize; user-select: none; }
 .dash-dock-link:hover strong, .dash-dock-link:focus-visible strong { color: var(--color-primary); }
 .dash-dock-link:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; border-radius: 8px; }
 .dash-dock-list li.is-next { background: var(--color-primary-soft); border-radius: 12px; padding-inline: 8px; border-bottom-color: transparent; }
+
+/* Debug panel — the multi-agent task tree */
+.debug-tree-root { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.debug-tree ul { list-style: none; margin: 0 0 0 8px; padding: 0 0 0 14px; border-left: 2px solid var(--color-border); display: grid; gap: 12px; }
+.debug-task { position: relative; font-size: 13px; }
+.debug-task::before { content: ''; position: absolute; left: -16px; top: 11px; width: 12px; border-top: 2px solid var(--color-border); }
+.debug-task-kv { margin-top: 4px; font-size: 12px; }
+
+/* =========================================================================
+   Summary panel — what the Summary Agent wrote, on any page (summary docks
+   share the dashboard dock's frame, head, figures and sections).
+   ========================================================================= */
+.sum-dock .dash-dock-title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sum-dock-text p { margin: 0 0 8px; font-size: 13px; line-height: 1.65; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.sum-dock-text p:last-child { margin-bottom: 0; }
+.sum-dock-points { margin: 0 0 8px; padding-inline-start: 18px; font-size: 13px; line-height: 1.6; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.sum-dock-points li { margin-bottom: 3px; }
+.sum-dock-points li::marker { color: var(--color-accent); }
+.sum-dock-writing .ant-skeleton-paragraph { margin: 2px 0 10px !important; }
+.sum-dock-writing-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #0668b0; font-weight: 600; }
+.sum-dock-source.sum-dock-source {
+  display: flex; align-items: center; gap: 6px; margin: 10px 0 0; padding-top: 9px; border-top: 1px dashed #c3e5fb;
+  font-size: 11.5px; line-height: 1.4; color: var(--color-text-muted);
+}
+.sum-dock-source > svg { flex-shrink: 0; color: var(--color-accent); }
+.sum-dock-source > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sum-dock-time { margin-inline-start: auto; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.sum-dock-asked { margin: -4px 2px 0; font-size: 12px; line-height: 1.45; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.sum-dock-asked q { color: var(--color-text-secondary); font-style: italic; }
+.sum-dock-stats .dash-dock-stat { cursor: default; padding: 10px 12px; }
+.sum-dock-stats .dash-dock-stat:hover { transform: none; box-shadow: var(--shadow-sm); }
+.sum-dock-stats .dash-dock-stat-value { font-size: 21px; }
+.sum-dock-stats .dash-dock-stat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sum-dock-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sum-dock-items li {
+  position: relative; padding: 8px 10px 8px 14px; border-radius: 11px; background: var(--color-surface-muted);
+  font-size: 12.5px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere;
+}
+.sum-dock-items li::before { content: ''; position: absolute; left: 5px; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--item-tone, var(--color-border-strong)); }
+.sum-dock-items li[data-tone='primary'] { --item-tone: var(--color-primary); }
+.sum-dock-items li[data-tone='info'] { --item-tone: var(--color-info); }
+.sum-dock-items li[data-tone='success'] { --item-tone: var(--color-success); }
+.sum-dock-items li[data-tone='warning'] { --item-tone: var(--color-warning); }
+.sum-dock-items li[data-tone='error'] { --item-tone: var(--color-error); background: var(--color-error-soft); }
+.sum-dock-items strong { display: block; color: var(--color-ink); font-weight: 600; }
+.sum-dock-items .muted { display: block; font-size: 11.5px; }
+.sum-dock .dash-dock-foot .ant-btn { min-width: 0; }
+.sum-dock .dash-dock-foot .ant-btn > span:not(.ant-btn-icon) { overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 480px) {
+  .sum-dock-stats { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .sum-dock .dash-dock-head { padding: 14px 8px 14px 14px; }
+}
+
+/* On a phone or a tablet the dock covers the page: never wider than the screen (a width dragged on a
+   desktop does not carry over), and the assistant's button sits above its footer, with room left under
+   the last row so nothing ends up behind it. */
+@media (max-width: 1279.98px) {
+  .dash-dock { width: min(var(--right-dock-width), 100vw); }
+  .app-shell.has-right-dock .voice-fab { bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
+  .app-shell.has-right-dock .dash-dock-body { padding-bottom: 92px; }
+}

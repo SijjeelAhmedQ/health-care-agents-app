@@ -86,8 +86,25 @@ export interface ModelTestResult {
   detail: string;
 }
 
-/** A real request with one small tool: proves the model loads, answers and calls tools. */
-export async function testModel(llm: AIConfig['llm']): Promise<ModelTestResult> {
+/**
+ * A real request with one small tool: proves the model loads, answers and calls tools. `tools: false` — an agent
+ * that only writes (the Summary Agent): a short summary to write, no tools offered; it must answer.
+ */
+export async function testModel(llm: AIConfig['llm'], opts: { tools?: boolean } = {}): Promise<ModelTestResult> {
+  if (opts.tools === false) {
+    const chat = createChatLLM({ ...llm, timeoutMs: Math.max(llm.timeoutMs, 300000) });
+    const started = Date.now();
+    try {
+      const turn = await chat.chat([{ role: 'system', content: 'Summarize the data in one sentence.' }, { role: 'user', content: 'DATA\n- Lipid panel — Tom Baker (Normal)\n- HbA1c 8.1% — Chloe Bell (Abnormal)' }], [], { maxTokens: 96 });
+      const ms = Date.now() - started;
+      const text = turn.content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      return text ? { ok: true, toolCalling: false, ms, detail: `Wrote: “${text.slice(0, 140)}”` } : { ok: false, toolCalling: false, ms, detail: 'Answered with nothing.' };
+    } catch (e) {
+      return { ok: false, toolCalling: false, ms: Date.now() - started, detail: (e as Error).message };
+    } finally {
+      chat.dispose?.();
+    }
+  }
   const probe = defineTool({
     name: 'open_page',
     description: 'Open a page of the app.',

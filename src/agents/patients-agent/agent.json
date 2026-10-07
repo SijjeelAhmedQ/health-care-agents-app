@@ -1,0 +1,609 @@
+{
+  "$comment": "Generated from the app's code by src/services/ai/__tests__/agentJson.test.ts — do not edit by hand; run \"npm run agents:json\".",
+  "id": "patients",
+  "agent": "patients",
+  "name": "Patients Agent",
+  "skill": "src/agents/patients-agent/SKILL.md",
+  "version": "1.0",
+  "role": "specialist",
+  "description": "CareFlow's Patients Agent. Finds, searches, selects, clears, adds, edits and deletes patients — by name, MRN or id, asking which one when several match. Use for any task about who the patient is: \"find John Ahmed\", \"select Harry White\", \"add a new patient\", \"change her phone number\", \"delete this patient\".",
+  "toolSummary": {
+    "total": 18,
+    "mutating": 5,
+    "screenOnly": 10,
+    "readOnly": 3,
+    "reports": 0,
+    "mutatingTools": [
+      "create_patient",
+      "edit_patient",
+      "delete_patient",
+      "save_open_form",
+      "confirm_pending_action"
+    ]
+  },
+  "legend": {
+    "WRITE": "Mutates: adds, changes or deletes data (or a setting). A patient record is saved or deleted only after the provider confirms.",
+    "CONTEXT": "Changes what is on screen — the page, the selected patient, an open form — but saves nothing.",
+    "READ_ONLY": "Reads only: changes no data.",
+    "REPORT": "Reports to its own agent (a plan, a review): not an action on the app.",
+    "changesScreen": "Runs one at a time, because it changes the page, a list or a form the provider sees.",
+    "runsAlongsideOthers": "Touches nothing on screen, so it may run while another agent holds the screen."
+  },
+  "tools": [
+    {
+      "name": "search_patients",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Find patients by name, MRN or phone. Shows the results on the Patients page (numbered in on-screen order) and returns them with their ids.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "select_patient",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Make a patient the selected patient — the one the Summary, records and Inbox filing work on — and open their Summary (or the given Summary tab). Identify the patient by id, full name or MRN as the provider said it (no need to search first), or by position in the patient list on screen.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient": {
+            "type": "string",
+            "description": "Patient id, full name or MRN"
+          },
+          "list_position": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Position in the patient search results on screen (1 = first)"
+          },
+          "open_tab": {
+            "type": "string",
+            "enum": [
+              "summary-ai",
+              "summary-medication",
+              "summary-diagnosis",
+              "summary-task",
+              "summary-recall",
+              "summary-appointment"
+            ],
+            "description": "Summary tab to open after selecting"
+          }
+        }
+      }
+    },
+    {
+      "name": "clear_selected_patient",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Stop working on the selected patient (no patient selected afterwards).",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "create_patient",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Add a new patient: opens the new-patient form from any page, filled with whatever details were said (none is fine — the app asks for what is missing, and for confirmation before saving).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "age": {
+            "type": "number",
+            "description": "Age in years; an approximate date of birth is derived from it"
+          },
+          "gender": {
+            "type": "string",
+            "enum": [
+              "Male",
+              "Female",
+              "Other",
+              "Unknown"
+            ]
+          },
+          "bloodGroup": {
+            "type": "string",
+            "enum": [
+              "A+",
+              "A-",
+              "B+",
+              "B-",
+              "AB+",
+              "AB-",
+              "O+",
+              "O-",
+              "Unknown"
+            ]
+          },
+          "maritalStatus": {
+            "type": "string",
+            "enum": [
+              "Single",
+              "Married",
+              "Divorced",
+              "Widowed",
+              "Unknown"
+            ]
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "English",
+              "Spanish",
+              "Urdu",
+              "Arabic",
+              "Mandarin",
+              "Hindi",
+              "French"
+            ]
+          },
+          "occupation": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Digits exactly as spoken"
+          },
+          "email": {
+            "type": "string"
+          },
+          "addressLine1": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "postalCode": {
+            "type": "string"
+          },
+          "insuranceProvider": {
+            "type": "string",
+            "enum": [
+              "Blue Cross Blue Shield",
+              "Aetna",
+              "UnitedHealthcare",
+              "Cigna",
+              "Humana",
+              "Kaiser Permanente",
+              "Medicare",
+              "Medicaid",
+              "Self-pay"
+            ]
+          },
+          "policyNumber": {
+            "type": "string"
+          },
+          "primaryProviderName": {
+            "type": "string",
+            "description": "a provider's name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "Active",
+              "Inactive",
+              "Deceased",
+              "Pending"
+            ]
+          },
+          "emergencyContactName": {
+            "type": "string"
+          },
+          "emergencyContactPhone": {
+            "type": "string"
+          },
+          "emergencyContactRelation": {
+            "type": "string",
+            "enum": [
+              "Spouse",
+              "Parent",
+              "Child",
+              "Sibling",
+              "Friend",
+              "Other"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "name": "edit_patient",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Change an existing patient's details: opens their form and changes only the fields given. With ask_for_field instead of changes, asks the user for that field's new value. Omit patient and list_position for the selected patient.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient": {
+            "type": "string",
+            "description": "Patient id, full name or MRN"
+          },
+          "list_position": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Position in the patient search results on screen"
+          },
+          "changes": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "description": "Only the fields to change — same names and formats as create_patient"
+          },
+          "ask_for_field": {
+            "type": "string",
+            "enum": [
+              "firstName",
+              "lastName",
+              "dateOfBirth",
+              "age",
+              "gender",
+              "bloodGroup",
+              "maritalStatus",
+              "language",
+              "occupation",
+              "phone",
+              "email",
+              "addressLine1",
+              "city",
+              "state",
+              "postalCode",
+              "insuranceProvider",
+              "policyNumber",
+              "primaryProviderName",
+              "status",
+              "emergencyContactName",
+              "emergencyContactPhone",
+              "emergencyContactRelation"
+            ],
+            "description": "A field the user wants to change without having said the new value"
+          }
+        }
+      }
+    },
+    {
+      "name": "delete_patient",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Delete a patient. Shows the patient and asks the user to confirm; nothing is deleted until they do.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient": {
+            "type": "string",
+            "description": "Patient id, full name or MRN; omit for the selected patient"
+          },
+          "list_position": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Position in the patient search results on screen"
+          }
+        }
+      }
+    },
+    {
+      "name": "patient_summary_panel",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "description": "Show or hide the panel docked on the right that summarises the selected patient at a glance.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "open"
+        ]
+      }
+    },
+    {
+      "name": "open_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Open a page or a Summary tab: dashboard (Dashboard), patients (Patients), inbox (Inbox), summary (Summary), my-appointments (My Appointments), configuration (Configuration), summary-ai (AI Summary), summary-medication (Medications), summary-diagnosis (Diagnoses), summary-task (Tasks), summary-recall (Recalls), summary-appointment (Appointments), inbox-all (Inbox — All), inbox-lab (Inbox — Lab), inbox-radiology (Inbox — Radiology), inbox-referral (Inbox — Referrals), inbox-discharge (Inbox — Discharge Summary).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "string",
+            "enum": [
+              "dashboard",
+              "patients",
+              "inbox",
+              "summary",
+              "my-appointments",
+              "configuration",
+              "summary-ai",
+              "summary-medication",
+              "summary-diagnosis",
+              "summary-task",
+              "summary-recall",
+              "summary-appointment",
+              "inbox-all",
+              "inbox-lab",
+              "inbox-radiology",
+              "inbox-referral",
+              "inbox-discharge"
+            ],
+            "description": "Page id"
+          }
+        },
+        "required": [
+          "page"
+        ]
+      }
+    },
+    {
+      "name": "go_back",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Go back to the previous screen (in the Inbox: close the open record).",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "scroll_page",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Scroll the current page.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down",
+              "top",
+              "bottom"
+            ]
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      }
+    },
+    {
+      "name": "control_list",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Search, filter or page the list on screen (see CONTEXT: list on screen), e.g. {\"filter\": \"Status\", \"value\": \"Active\"}, {\"page\": \"next\"}, {\"search\": \"khan\"}, {\"clear\": true}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "search": {
+            "type": "string",
+            "description": "Text to search for; \"\" clears the search"
+          },
+          "filter": {
+            "type": "string",
+            "description": "A filter of the list, by its name"
+          },
+          "value": {
+            "type": "string",
+            "description": "The option to filter by; \"all\" removes that filter"
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Clear the search and every filter"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "next",
+                  "previous",
+                  "first",
+                  "last"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "fill_open_form",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Set fields on the form that is open now (see CONTEXT: open form and its values) — e.g. {\"frequency\": \"Twice daily\"}. Use it to answer a pending question or to change what the form holds. Arguments are the form's own field names, in the same formats as the add_* tools.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "clear_form_field",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Empty one field of the open form.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ]
+      }
+    },
+    {
+      "name": "save_open_form",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user asked to save the open form. If a save is already waiting for their confirmation, this is that confirmation and it saves; otherwise it checks the form and asks them to confirm.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "confirm_pending_action",
+      "executionType": "WRITE",
+      "mutates": true,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "Carry out the pending save / delete / filing shown in CONTEXT. Call it ONLY when the user has just said yes / confirm / save / delete it in reply to that pending confirmation — never on your own initiative.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_pending_action",
+      "executionType": "CONTEXT",
+      "mutates": false,
+      "changesScreen": true,
+      "runsAlongsideOthers": false,
+      "sharedWithEverySpecialist": true,
+      "description": "The user said no / cancel / stop: drop the pending confirmation or question and close the open form without saving.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "wait_for_more_speech",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "What was said is an unfinished fragment (cut off mid-sentence). Nothing is done; it is joined with what the user says next.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "not_my_task",
+      "executionType": "READ_ONLY",
+      "mutates": false,
+      "changesScreen": false,
+      "runsAlongsideOthers": true,
+      "sharedWithEverySpecialist": true,
+      "description": "SAID is not something your tools do (it belongs to another part of the app), or it is not an answer to the pending question or confirmation — hand it back to the master instead of guessing. Never use it for something your tools can do.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "better_agent": {
+            "type": "string",
+            "enum": [
+              "patients",
+              "dashboard",
+              "appointments",
+              "patient_appointments",
+              "medications",
+              "diagnoses",
+              "tasks",
+              "recalls",
+              "notes",
+              "summary",
+              "inbox"
+            ],
+            "description": "The agent it belongs to, if you know: patients, dashboard, appointments, patient_appointments, medications, diagnoses, tasks, recalls, notes, summary, inbox"
+          }
+        }
+      }
+    }
+  ]
+}

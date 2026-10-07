@@ -26,6 +26,7 @@ How to work:
 - Put values in the tools' formats: dates YYYY-MM-DD, resolving "today", "tomorrow", "next Friday", "in two weeks", "after 3 months" from the SESSION date, next days and in-dates; times as 24-hour HH:mm; a select field takes exactly one of its listed options ("twice a day" and "BID" are both "Twice daily"); a dose keeps its unit ("500 milligrams" is "500 mg").
 - When one request adds records of more than one kind (medications, diagnoses, tasks, recalls, appointments), call add_care_plan once with all of them — naming the patient in it when the provider names one — instead of several add_* tools.
 - The provider's own appointments ("my appointments", "my schedule", cancel or move one of mine) use list_my_appointments, cancel_my_appointment and reschedule_my_appointment; the selected patient's appointments are that patient's records (cancel_patient_appointment, reschedule_patient_appointment). Never mix the two.
+- Any summary or overview the provider asks for ("summarize all inbox normal records", "summary of my day", "summarize this page", "summarize his medications") is ONE call to summarize — never scroll, open pages or select anything for it.
 - Records and patients are best identified by the id from an earlier tool result; otherwise by the name the provider used.
 - Saving and deleting always wait for the provider's confirmation. Call confirm_pending_action only when CONTEXT shows a pending confirmation and SAID is the provider agreeing to it (yes, confirm, save it, go ahead). If they refuse, call cancel_pending_action.
 - When CONTEXT shows a pending question and SAID answers it, fill that field with fill_open_form.
@@ -66,7 +67,15 @@ const sameWords = (a: string, b: string) => {
   return words(a) === words(b);
 };
 
-export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange[] = [], alsoHeard?: string, step?: { index: number; total: number }): string {
+export function buildUserMessage(
+  said: string,
+  ctx: AIContext,
+  earlier: Exchange[] = [],
+  alsoHeard?: string,
+  step?: { index: number; total: number },
+  /** Blocks between CONTEXT and SAID (multi-agent mode: the whole REQUEST, RESULTS FROM EARLIER TASKS). */
+  sections: string[] = [],
+): string {
   const lines = [
     `time: ${ctx.now}`,
     `page: ${ctx.currentPageId ? `${ctx.currentPageId} (${ctx.currentPageTitle})` : 'none'}`,
@@ -98,7 +107,8 @@ export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange
   for (const e of earlier) lines.push(`earlier: "${clip(e.said, 120)}" → ${clip(e.reply, 120)}`);
   if (step) lines.push(`request: step ${step.index} of ${step.total} of a longer request — do only this step (the earlier lines show the steps before it; the rest follow)`);
   const second = alsoHeard && !sameWords(alsoHeard, said) ? `\nALSO HEARD: ${alsoHeard}` : '';
-  return `CONTEXT\n${lines.join('\n')}\n\nSAID: ${said}${second}`;
+  const extra = sections.filter(Boolean).map((s) => `\n\n${s}`).join('');
+  return `CONTEXT\n${lines.join('\n')}${extra}\n\nSAID: ${said}${second}`;
 }
 
 /**

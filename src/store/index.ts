@@ -7,6 +7,7 @@ import uiReducer from './slices/uiSlice';
 import voiceReducer from './slices/voiceSlice';
 import navigationReducer from './slices/navigationSlice';
 import inboxReducer from './slices/inboxSlice';
+import monitorReducer from './slices/monitorSlice';
 import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from './slices/recordSlices';
 
 export const store = configureStore({
@@ -23,6 +24,7 @@ export const store = configureStore({
     ui: uiReducer,
     voice: voiceReducer,
     navigation: navigationReducer,
+    monitor: monitorReducer,
   },
   middleware: (getDefault) =>
     getDefault({

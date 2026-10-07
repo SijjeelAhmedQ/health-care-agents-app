@@ -31,8 +31,10 @@ export interface PatientOverview {
   loading: boolean;
 }
 
-export function usePatientOverview(): PatientOverview {
-  const patientId = useAppSelector((s) => s.patients.currentPatientId);
+/** `of`: whose records — a patient's id (the Inbox item's patient); left out: the selected patient's. */
+export function usePatientOverview(of?: string | null): PatientOverview {
+  const selected = useAppSelector((s) => s.patients.currentPatientId);
+  const patientId = of === undefined ? selected : of;
   const allMedications = useAppSelector(medicationsSlice.selectors.selectAll);
   const allDiagnoses = useAppSelector(diagnosesSlice.selectors.selectAll);
   const allTasks = useAppSelector(tasksSlice.selectors.selectAll);

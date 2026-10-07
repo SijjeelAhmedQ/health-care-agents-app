@@ -5,9 +5,15 @@
  * assistant turn: text, tool calls, or both. The agent loop
  * (services/ai/agent/agent.ts) never depends on which runtime answered.
  *
- *  - OllamaChat            Ollama /api/chat (qwen3.5:4b) — the default
- *  - OpenAICompatibleChat  llama.cpp server, LM Studio, mlx_lm.server, vLLM
+ *  - OllamaChat            Ollama /api/chat (qwen3.5:4b) — This Computer, and only there
+ *  - VllmChat              a vLLM server (your own, or the Kaggle notebook's through the bridge's /vllm)
+ *  - OpenRouterChat        OpenRouter, through the bridge's /openrouter (the bridge holds the key)
+ *  - OpenAICompatibleChat  llama.cpp server, LM Studio, mlx_lm.server
  *  - BridgeChat            the Python bridge's /api/chat (python/app.py)
+ *
+ * Which one answers is decided here, from the configured provider, and nowhere else: the agents (the
+ * single assistant, the master, the specialists) only ever see ChatLLM. A provider's quirks — Qwen's
+ * thinking switch on vLLM, OpenRouter's errors inside a 200 — are handled in its adapter.
  */
 import type { ToolCall } from '@/types/ai';
 import type { AIConfig } from '../config';
@@ -242,15 +248,19 @@ function toOpenAI(messages: ChatMessage[]) {
 
 export class OpenAICompatibleChat implements ChatLLM {
   readonly name: string;
-  constructor(private readonly cfg: AIConfig['llm']) {
+  constructor(protected readonly cfg: AIConfig['llm'], label?: string) {
     // Through the bridge's OpenRouter proxy it is an OpenRouter model (e.g. openrouter:openai/gpt-6-sol).
-    this.name = `${trimSlash(cfg.apiUrl).endsWith('/openrouter/api') ? 'openrouter' : 'openai-compatible'}:${cfg.model}`;
+    this.name = `${label ?? (trimSlash(cfg.apiUrl).endsWith('/openrouter/api') ? 'openrouter' : 'openai-compatible')}:${cfg.model}`;
+  }
+  /** What this runtime needs in every request beside the OpenAI fields. */
+  protected extraBody(): Record<string, unknown> {
+    return {};
   }
   async chat(messages: ChatMessage[], tools: ToolSchema[], options?: ChatOptions): Promise<ChatTurn> {
     const started = Date.now();
     const res = await post(
       `${trimSlash(this.cfg.apiUrl)}/v1/chat/completions`,
-      { model: this.cfg.model, messages: toOpenAI(messages), tools, temperature: 0, max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS },
+      { model: this.cfg.model, messages: toOpenAI(messages), tools, temperature: 0, max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS, ...this.extraBody() },
       this.cfg.timeoutMs,
       options?.signal,
     );
@@ -305,14 +315,93 @@ export class BridgeChat implements ChatLLM {
   }
 }
 
+/**
+ * vLLM's OpenAI-compatible server: on this machine, on your own GPU server, or the Kaggle notebook's
+ * (through the bridge, which adds the Kaggle key). Qwen 3.5 thinks aloud unless its chat template is told
+ * not to — the same switch as Ollama's `think: false`. vLLM caches shared prompt prefixes by itself
+ * (--enable-prefix-caching): a one-token request with the static prefix primes it.
+ */
+export class VllmChat extends OpenAICompatibleChat {
+  constructor(cfg: AIConfig['llm']) {
+    super(cfg, 'vllm');
+  }
+  protected extraBody() {
+    return { chat_template_kwargs: { enable_thinking: false } };
+  }
+  async warmUp(prefix: ChatMessage[], tools: ToolSchema[]): Promise<string | null> {
+    try {
+      const res = await post(
+        `${trimSlash(this.cfg.apiUrl)}/v1/chat/completions`,
+        { model: this.cfg.model, messages: toOpenAI([...prefix, { role: 'user', content: 'ok' }]), tools, temperature: 0, max_tokens: 1, ...this.extraBody() },
+        Math.max(this.cfg.timeoutMs, 300000),
+      );
+      // A long load is answered at once and kept open (the Kaggle server, past a tunnel): its error comes in the body.
+      const data = (await res.json().catch(() => ({}))) as { error?: { message?: string; code?: number | string } };
+      return data.error ? (data.error.message ?? String(data.error.code ?? 'the model could not be loaded')) : null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+  /**
+   * Whether the model is in GPU memory now. The Kaggle server says so itself (/careflow/status: what Ollama
+   * has loaded); any other vLLM server only says the model is served — taken as loaded, as before.
+   */
+  async isLoaded() {
+    const status = await this.serverStatus();
+    if (status?.loaded) return status.loaded.includes(this.cfg.model);
+    return this.healthCheck();
+  }
+  /** The Kaggle server's view of its models (null from a server that does not have it). */
+  async serverStatus(): Promise<{ models?: string[]; loaded?: string[]; loading?: Record<string, number>; restarts?: number } | null> {
+    try {
+      const res = await fetch(`${trimSlash(this.cfg.apiUrl)}/careflow/status`);
+      if (!res.ok) return null;
+      const data = (await res.json()) as { loaded?: unknown };
+      return Array.isArray(data.loaded) ? (data as { loaded: string[] }) : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** OpenRouter's API, through the bridge's /openrouter proxy — the browser never holds the key. */
+export class OpenRouterChat extends OpenAICompatibleChat {
+  constructor(cfg: AIConfig['llm']) {
+    super(cfg, 'openrouter');
+  }
+}
+
+/**
+ * A provider this version does not know: every request says so. Never a quiet fallback to Ollama — the
+ * configured provider alone decides where the model runs.
+ */
+class UnknownProviderChat implements ChatLLM {
+  readonly name: string;
+  constructor(private readonly provider: string) {
+    this.name = `unknown:${provider}`;
+  }
+  async chat(): Promise<ChatTurn> {
+    throw new ModelUnavailableError(`The language model provider "${this.provider}" is not known — choose This Computer, vLLM or OpenRouter in Configuration.`);
+  }
+  async warmUp() {
+    return `Unknown language model provider "${this.provider}".`;
+  }
+}
+
+/** The adapter for the configured provider — the one place that decides the runtime path. */
 export function createChatLLM(llm: AIConfig['llm']): ChatLLM {
   switch (llm.provider) {
+    case 'ollama':
+      return new OllamaChat(llm);
+    case 'vllm':
+      return new VllmChat(llm);
+    case 'openrouter':
+      return new OpenRouterChat(llm);
     case 'openai-compatible':
       return new OpenAICompatibleChat(llm);
     case 'bridge':
       return new BridgeChat(llm);
-    case 'ollama':
     default:
-      return new OllamaChat(llm);
+      return new UnknownProviderChat(String(llm.provider));
   }
 }

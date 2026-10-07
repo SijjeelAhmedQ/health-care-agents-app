@@ -13,7 +13,7 @@
  * is first split into its actions (plan_steps), then carried out one step at a time through the same
  * loop — a small model doing it all in one go tends to stop part-way.
  */
-import type { AgentStep, AIContext, ExtractionResult, FieldValues, PlanStep, ToolCall, ToolResult } from '@/types/ai';
+import type { AgentStep, AIContext, ExtractionResult, FieldValues, PlanStep, SafetyFinding, ToolCall, ToolResult } from '@/types/ai';
 import { RECORD_KINDS } from '@/types/records';
 import { FieldRegistry, type FieldScalar } from '@/registry/fieldRegistry';
 import type { ChatLLM, ChatMessage, ToolSchema } from '../providers/llm';
@@ -39,6 +39,48 @@ export interface AgentHooks {
   /** A long request is being carried out in steps: each step and how far it got. */
   onPlan?(steps: PlanStep[]): void;
 }
+
+/**
+ * Who an agent is: its name and its system prompt. The single assistant is the default; the specialists
+ * and the master of the multi-agent mode (agents/) are the same class with their own profile and tools.
+ */
+export interface AgentProfile {
+  name: string;
+  systemPrompt: string;
+}
+
+export const ASSISTANT_PROFILE: AgentProfile = { name: 'assistant', systemPrompt: SYSTEM_PROMPT };
+
+/**
+ * A check made before a tool runs: a result refuses the call (it goes back to the model as that tool's
+ * result), null lets it run. The multi-agent scheduler uses it to keep a read-only task from writing.
+ */
+export type ToolGuard = (call: ToolCall, tool: Tool) => ToolResult | null | Promise<ToolResult | null>;
+
+/**
+ * The Safety Agent as the agent loop sees it (services/ai/safety): `check` before a tool runs — keep, correct,
+ * remove values, or ask the provider instead of running it; `after` once it ran — what it prepared for
+ * confirmation holds only what was said.
+ */
+export interface SafetyGate {
+  check(call: ToolCall): { kind: 'allow'; findings: SafetyFinding[] } | { kind: 'rewrite'; args: Record<string, unknown>; findings: SafetyFinding[] } | { kind: 'ask' | 'refuse'; result: ToolResult; findings: SafetyFinding[] };
+  after(call: ToolCall, result: ToolResult): { kind: 'ask'; result: ToolResult; findings: SafetyFinding[] } | { kind: string; findings: SafetyFinding[] } | null;
+  note(findings: SafetyFinding[]): string;
+  /** A tool's result: what the application showed (dates, times) may be pointed at later in the request. */
+  observe?(result: ToolResult): void;
+  /** Its model's second look at a risky call the rules let through — it can only ask. */
+  review?(call: ToolCall): Promise<{ kind: 'ask'; result: ToolResult; findings: SafetyFinding[] } | null>;
+}
+
+/** The reply when a request ended without anything being done. */
+export const NOTHING_DONE = "I couldn't carry that out — nothing was changed. Please say it again, or in shorter parts.";
+
+/**
+ * Agent turns share one counter: the runtime tells a confirmation prepared in this turn from one prepared
+ * earlier by the turn number, whichever agent (single or multi-agent mode) ran it.
+ */
+let turnCounter = 0;
+export const nextTurnId = () => ++turnCounter;
 
 /**
  * Whether the planned steps still hold what was said: nearly every content word of the request must
@@ -73,7 +115,7 @@ function finalReply(awaiting: string | null, modelText: string, lastToolMessage:
   if (awaiting) return !awaiting.trim().endsWith('?') && usable && /\b(review|confirm)/i.test(modelText) ? modelText : awaiting;
   if (usable) return modelText;
   if (lastToolMessage) return lastToolMessage;
-  return calledTools ? 'Done.' : "I couldn't carry that out — nothing was changed. Please say it again, or in shorter parts.";
+  return calledTools ? 'Done.' : NOTHING_DONE;
 }
 
 const PLAN_FILLER = new Set(['then', 'also', 'with', 'that', 'this', 'please', 'after', 'into', 'from', 'have', 'them', 'they', 'their', 'there', 'and', 'what', 'will', 'would', 'could', 'should', 'just', 'okay', 'well', 'unclear']);
@@ -92,10 +134,11 @@ export class Agent {
   private byName = new Map<string, Tool>();
   /** Earlier exchanges (what was said, what was answered), shown in CONTEXT so follow-ups make sense. */
   private earlier: Exchange[] = [];
-  private turnCounter = 0;
   static readonly EARLIER_EXCHANGES = 3;
   /** The SESSION message the model's cache was last primed with. */
   private primedSession: string | null = null;
+  /** The Safety Agent, between this agent and its tools (null: none). */
+  private safety: SafetyGate | null = null;
 
   constructor(
     private readonly llm: ChatLLM,
@@ -104,10 +147,15 @@ export class Agent {
     private readonly maxSteps: number,
     /** Split long requests into steps before carrying them out. */
     private readonly planSteps = false,
+    readonly profile: AgentProfile = ASSISTANT_PROFILE,
   ) {}
 
   get modelName() {
     return this.llm.name;
+  }
+
+  get name() {
+    return this.profile.name;
   }
 
   /** (Re)build the tool list — whenever its inputs (e.g. the provider list) change. */
@@ -121,6 +169,11 @@ export class Agent {
     return this.tools.map((t) => t.name);
   }
 
+  /** Put the Safety Agent between this agent and its tools (null takes it away). */
+  setSafety(gate: SafetyGate | null) {
+    this.safety = gate;
+  }
+
   get toolList(): readonly Tool[] {
     return this.tools;
   }
@@ -128,7 +181,7 @@ export class Agent {
   /** What every request starts with: the static system prompt, then the day's SESSION exchange. */
   private prefix(ctx: AIContext): ChatMessage[] {
     return [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: this.profile.systemPrompt },
       { role: 'user', content: buildSessionMessage(ctx) },
       { role: 'assistant', content: SESSION_ACK },
     ];
@@ -149,13 +202,29 @@ export class Agent {
     this.earlier = [];
   }
 
-  contextBlock(said: string, ctx = this.buildContext(), alsoHeard?: string) {
-    return buildUserMessage(said, ctx, this.earlier, alsoHeard);
+  contextBlock(said: string, ctx = this.buildContext(), alsoHeard?: string, requirements?: string[]) {
+    const sections = requirements?.length
+      ? [`APPROVED REQUIREMENTS (gathered by the Planning Agent, checked by the Safety Agent — use these values; a value the provider SAID that is not listed still comes from their words. Never add one they did not say: the app asks for it)\n${requirements.map((r) => `- ${r}`).join('\n')}`]
+      : [];
+    return buildUserMessage(said, ctx, this.earlier, alsoHeard, undefined, sections);
   }
 
   /** `alsoHeard`: the same speech as a second recogniser (with the app's vocabulary) heard it. */
-  async run(said: string, hooks: AgentHooks = {}, signal?: AbortSignal, alsoHeard?: string): Promise<AgentOutcome> {
-    const turn = ++this.turnCounter;
+  /**
+   * One model–tools loop over a user message someone else built (the multi-agent orchestrator: a task for
+   * a specialist, or a request for the master). Nothing else: no turn is begun or ended — the caller holds
+   * one runtime turn around every agent it runs for the utterance — and no exchange is remembered.
+   * `inPlan`: part of a larger request — an "unfinished sentence" there just ends the part.
+   */
+  async runMessage(content: string, hooks: AgentHooks = {}, signal?: AbortSignal, options: { inPlan?: boolean; guard?: ToolGuard } = {}): Promise<AgentOutcome> {
+    const outcome: AgentOutcome = { reply: '', speak: false, awaitingUser: false, deferred: false, fieldsModified: [] };
+    const ctx = this.buildContext();
+    await this.act([...this.prefix(ctx), { role: 'user', content }], hooks, signal, outcome, options.inPlan ?? false, options.guard);
+    return outcome;
+  }
+
+  async run(said: string, hooks: AgentHooks = {}, signal?: AbortSignal, alsoHeard?: string, requirements?: string[]): Promise<AgentOutcome> {
+    const turn = nextTurnId();
     const ctx = this.buildContext();
     // A new day (or another provider) changed the SESSION block: re-prime the cache after this turn.
     const reprime = this.primedSession !== null && buildSessionMessage(ctx) !== this.primedSession;
@@ -170,7 +239,7 @@ export class Agent {
         // A long request done in one go (the model does not plan, or planning is off) still shows its steps:
         // the tools as they are carried out — no extra model call.
         const shown = !this.planSteps && Agent.worthPlanning(said) ? this.stepsFromTools(hooks) : hooks;
-        await this.act([...this.prefix(ctx), { role: 'user', content: this.contextBlock(said, ctx, alsoHeard) }], shown, signal, outcome, false);
+        await this.act([...this.prefix(ctx), { role: 'user', content: this.contextBlock(said, ctx, alsoHeard, requirements) }], shown, signal, outcome, false);
       } else {
         await this.actInSteps(steps, hooks, signal, outcome);
       }
@@ -299,7 +368,7 @@ export class Agent {
    * The model–tools loop for one request (or one planned step), writing into `outcome`.
    * `inPlan`: a step of a planned request — an "unfinished sentence" there just ends the step.
    */
-  private async act(messages: ChatMessage[], hooks: AgentHooks, signal: AbortSignal | undefined, outcome: AgentOutcome, inPlan: boolean): Promise<'done' | 'final'> {
+  private async act(messages: ChatMessage[], hooks: AgentHooks, signal: AbortSignal | undefined, outcome: AgentOutcome, inPlan: boolean, guard?: ToolGuard): Promise<'done' | 'final'> {
     let lastToolMessage = '';
     let calledTools = false;
     const seen = new Set<string>();
@@ -360,7 +429,7 @@ export class Agent {
           hooks.onStep?.({ id: stepId(), type: 'tool', startedAt: Date.now(), finishedAt: Date.now(), call, result: { ok: true, message: 'Waiting for the rest of the sentence.' } });
           return 'done';
         }
-        const result = await this.execute(call, hooks);
+        const result = await this.execute(call, hooks, guard);
         // The same call giving the same result again is a loop, not progress ("next page" twice is
         // progress: its result changes). Tell the model once; the second time, end the turn.
         const signature = `${call.name} ${JSON.stringify(call.arguments)} → ${result.message}`;
@@ -396,13 +465,33 @@ export class Agent {
     return 'done';
   }
 
-  private async execute(call: ToolCall, hooks: AgentHooks): Promise<ToolResult> {
-    const step: AgentStep = { id: stepId(), type: 'tool', startedAt: Date.now(), call };
+  private async execute(asked: ToolCall, hooks: AgentHooks, guard?: ToolGuard): Promise<ToolResult> {
+    const step: AgentStep = { id: stepId(), type: 'tool', startedAt: Date.now(), call: asked };
     hooks.onStep?.(step);
-    const tool = this.byName.get(call.name);
+    const tool = this.byName.get(asked.name);
     let result: ToolResult;
+    // The Safety Agent first: what the model put in the call must have been said.
+    const safety = tool && this.safety ? this.safety.check(asked) : null;
+    let findings: SafetyFinding[] = safety?.findings ?? [];
+    const call: ToolCall = safety?.kind === 'rewrite' ? { ...asked, arguments: safety.args } : asked;
+    const stopped = safety?.kind === 'ask' || safety?.kind === 'refuse';
+    const refused = tool && guard && !stopped ? await guard(call, tool) : null;
+    // Then, for a risky call, the Safety Agent's model: it finds what does not match what was said, and asks.
+    if (tool && this.safety?.review && !stopped && !refused) {
+      const reviewed = await this.safety.review(call);
+      if (reviewed) {
+        result = reviewed.result;
+        findings = [...findings, ...reviewed.findings];
+        hooks.onStep?.({ ...step, finishedAt: Date.now(), result, safety: findings });
+        return result;
+      }
+    }
     if (!tool) {
       result = { ok: false, message: `There is no tool "${call.name}". Available: ${this.toolNames.join(', ')}.` };
+    } else if (safety?.kind === 'ask' || safety?.kind === 'refuse') {
+      result = safety.result;
+    } else if (refused) {
+      result = refused;
     } else {
       const parsed = parseArgs(tool, call.arguments);
       if (!parsed.ok) result = { ok: false, message: parsed.error };
@@ -414,8 +503,16 @@ export class Agent {
           result = { ok: false, message: `${call.name} failed: ${(e as Error).message}` };
         }
       }
+      if (this.safety && findings.length) result = { ...result, message: `${result.message} ${this.safety.note(findings)}`.trim() };
+      this.safety?.observe?.(result);
+      // What it prepared for the provider to confirm holds only what was said — or it is not shown to them.
+      const post = this.safety?.after(call, result);
+      if (post?.kind === 'ask' && 'result' in post) {
+        result = post.result;
+        findings = [...findings, ...post.findings];
+      }
     }
-    hooks.onStep?.({ ...step, finishedAt: Date.now(), result });
+    hooks.onStep?.({ ...step, finishedAt: Date.now(), result, safety: findings.length ? findings : undefined });
     return result;
   }
 

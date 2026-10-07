@@ -39,6 +39,20 @@ import type { AIConfig, LLMProviderKind } from '@/services/ai/config';
 import type { ModelInfo } from '@/services/ai/modelCatalog';
 import type { SttConfig, SttSettings } from '@/services/ai/sttConfig';
 import { soundAlikes } from '@/services/records/nameMatch';
+import type { ChatLLM } from '../providers/llm';
+
+/** A summary that was written and shown (RuntimeDeps.summarize). */
+export interface SummaryOutcome {
+  /** What it is of: "Normal Inbox records". */
+  title: string;
+  /** Whose / how much: "All patients · 5 records". */
+  scope: string;
+  text: string;
+  source: 'model' | 'rules';
+  empty: boolean;
+  /** The model call, for the trace (when a model wrote it). */
+  model?: { name: string; request?: unknown; answer?: string; ms?: number; note?: string };
+}
 
 export interface RuntimeState {
   currentPageId: string | null;
@@ -87,6 +101,11 @@ export interface RuntimeDeps {
   stopListening(): void;
   /** Hand a dictated clinical note to the AI Summary for extraction (or start dictating one). */
   takeNote(text?: string): void;
+  /**
+   * Summarize what `text` asks about (the dashboard, Inbox records, a page, a patient's chart …): the app gathers
+   * the data, the Summary Agent's model (`llm`, or the assistant's) writes it, and it opens in the Summary panel.
+   */
+  summarize?(request: { text: string; said?: string; llm?: ChatLLM | null; signal?: AbortSignal }): Promise<SummaryOutcome>;
   // ---- configuration
   /** The language model settings in use, and the bridge's address. */
   aiSettings(): { llm: AIConfig['llm']; bridgeUrl: string };
@@ -164,6 +183,9 @@ function isBlank(def: FormDefinition, values: Record<string, unknown>): boolean 
   return def.fields.filter((f) => f.required && f.optionsFrom !== 'patients').every((f) => values[f.name] === undefined || values[f.name] === '' || values[f.name] === null);
 }
 
+/** The provider said it is about every patient: "all patients' …", "every patient", "all of the patients", "everyone's". */
+const EVERY_PATIENT = /\b(all|every|each)\s+(of\s+)?(the\s+|my\s+)?patient(s|'s|s')?\b|\beveryone'?s?\b/i;
+
 export class AppRuntime {
   origin: Origin = 'ui';
   /** The agent turn in progress; a confirmation staged in this turn cannot be confirmed in it. */
@@ -220,6 +242,24 @@ export class AppRuntime {
   }
 
   /** The open form's (or care plan's) records grouped by patient, when they are for more than one patient. */
+  /** The patients whose new records wait in the open record form or the care plan ([] when none waits). */
+  waitingPatients(): string[] {
+    const names = new Set<string>();
+    const plan = CarePlanRegistry.get();
+    const values = plan?.isOpen()
+      ? plan.entries().map((e) => e.values)
+      : (() => {
+          const form = FormRegistry.active();
+          if (!form?.isOpen() || !(RECORD_KINDS as readonly string[]).includes(form.formId)) return [];
+          return form.entries?.getAll() ?? [form.getValues()];
+        })();
+    for (const v of values) {
+      const who = patientRefName((v as Record<string, unknown>).patient) || this.state().currentPatientName;
+      if (who) names.add(who);
+    }
+    return [...names];
+  }
+
   private openRecordsByPatient(): Record<string, string[]> | null {
     const groups: Record<string, string[]> = {};
     const add = (kind: string, values: Record<string, unknown>) => {
@@ -247,6 +287,42 @@ export class AppRuntime {
     const pending = this.state().pendingConfirmation;
     const slot = this.state().pendingSlot;
     return (!!pending && this.pendingTurn === this.turn) || (!!slot && JSON.stringify(slot) !== this.slotAtTurnStart);
+  }
+
+  /** The form open now holds a saved record being changed (not a new one). */
+  private editing = false;
+
+  /** A form is open on a saved record (an edit): what it holds was saved before, not said now. */
+  isEditing(): boolean {
+    return this.editing && !!FormRegistry.active()?.isOpen();
+  }
+
+  /**
+   * New records wait on the provider in a record form or the care plan (a question about them, or the one
+   * confirmation to save them): more records — another agent's — can join them, and are saved with them.
+   */
+  recordsWaiting(): boolean {
+    if (this.isEditing()) return false;
+    const st = this.state();
+    const active = FormRegistry.active();
+    const open = CarePlanRegistry.isOpen() || (!!active?.isOpen() && (RECORD_KINDS as readonly string[]).includes(active.formId));
+    const waits = (st.pendingConfirmation?.kind === 'form' && !st.pendingConfirmation.recordId) || !!st.pendingSlot;
+    return open && waits;
+  }
+
+  /**
+   * Close what was prepared for confirmation, unconfirmed — the Safety Agent found a value in it nobody said.
+   * Nothing of it is saved; the provider is asked again.
+   */
+  discardStaged() {
+    this.pendingTurn = null;
+    this.deps.setPendingConfirmation(null);
+    this.deps.setPendingSlot(null);
+    if (CarePlanRegistry.isOpen()) CarePlanRegistry.get()?.close();
+    const form = FormRegistry.active();
+    if (form?.isOpen()) form.close();
+    this.deps.setOpenForm(null);
+    this.editing = false;
   }
 
   private stage(p: PendingConfirmation) {
@@ -285,6 +361,8 @@ export class AppRuntime {
       const blocked = this.requirePatient(`open ${page.title}`);
       if (blocked) return blocked;
     }
+    // Agent Monitoring is being watched: the screen stays on it, so say so rather than "Opened".
+    if (NavigationRegistry.isPinned()) return fail(`Agent Monitoring is on screen and stays there — ${page.title} was not opened. Go back to CareFlow to open it.`);
     this.deps.navigate(page.path);
     await waitFor(() => NavigationRegistry.pathname() === page.path, 2500);
     await sleep(80); // let a lazy page mount and register its forms
@@ -385,6 +463,28 @@ export class AppRuntime {
     });
   }
 
+  /**
+   * Who a name said for a call is — the same lookup the tools use (a reference, the full name or MRN, part of
+   * a name, a misheard spelling). One patient: their name. Otherwise the candidates (none: nobody matches).
+   * Looks only: nothing is searched on screen, nothing selected.
+   */
+  findPatient(raw: string): { name?: string; options: string[]; close?: boolean } {
+    const all = this.deps.allPatients();
+    const ref = findPatientByRef(all, raw);
+    if (ref) return { name: ref.fullName, options: [] };
+    const clean = String(raw).replace(/\s*\([^)]*\)\s*$/, '').trim();
+    if (!clean) return { options: [] };
+    const found = this.resolvePatient(clean);
+    if (!('ok' in found)) return { name: found.patient.fullName, options: [] };
+    const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const exact = all.filter((p) => key(p.fullName) === key(clean));
+    const pool = exact.length > 1 ? exact : matchRecord('patient', all, clean).candidates;
+    // Nobody matches: the names spelled most like it ("John" → Josh Clarke), offered — never chosen.
+    const close = !pool.length;
+    const options = (pool.length ? pool : soundAlikes(clean, all, (p) => p.fullName).matches.map((m) => m.item)) as Patient[];
+    return { options: options.slice(0, close ? 3 : 5).map((p) => `${p.fullName} (${p.mrn})`), close };
+  }
+
   async selectPatient(args: { patient?: string; position?: number; page?: string }): Promise<ToolResult> {
     const found = this.resolvePatient(args.patient, args.position);
     if ('ok' in found) {
@@ -442,6 +542,7 @@ export class AppRuntime {
     this.deps.setPendingConfirmation(null);
     this.deps.setPendingSlot(null);
     if (!page.openEdit(p.id)) return fail(`I couldn't open ${p.fullName} for editing.`);
+    this.editing = true;
     const form = await waitFor(() => FormRegistry.get('patient'), 3000);
     if (!form) return fail('The patient form did not open.');
     await waitFor(() => form.isOpen(), 1500);
@@ -475,17 +576,24 @@ export class AppRuntime {
     return controller ?? fail(`I couldn't open the ${page.title} page.`);
   }
 
-  async listRecords(kind: RecordKind, status?: string): Promise<ToolResult> {
+  async listRecords(kind: RecordKind, status?: string, patient?: string, search?: string): Promise<ToolResult> {
+    const chose = await this.usePatient(patient);
+    if (chose) return chose;
     const blocked = this.requirePatient(`list ${recordLabels[kind].plural}`);
     if (blocked) return blocked;
     await this.ensureModule(kind);
     const all = this.deps.getRecords(kind);
-    const rows = status ? all.filter((r) => recordStatus(kind, r).toLowerCase() === status.toLowerCase()) : all;
+    const byStatus = status ? all.filter((r) => recordStatus(kind, r).toLowerCase() === status.toLowerCase()) : all;
+    // A search: every word said is in the record (its name, dose, reason, notes …).
+    const words = (search ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    const rows = words.length ? byStatus.filter((r) => words.every((w) => JSON.stringify(r).toLowerCase().includes(w))) : byStatus;
     const who = this.state().currentPatientName;
+    const which = `${status ? `${status.toLowerCase()} ` : ''}`;
+    const matching = words.length ? ` matching "${search}"` : '';
     return ok(
       rows.length
-        ? `${who} has ${rows.length} ${status ? `${status.toLowerCase()} ` : ''}${rows.length === 1 ? recordLabels[kind].singular : recordLabels[kind].plural}. The ${PageRegistry.recordTab(kind).title} tab is open.`
-        : `${who} has no ${status ? `${status.toLowerCase()} ` : ''}${recordLabels[kind].plural}.`,
+        ? `${who} has ${rows.length} ${which}${rows.length === 1 ? recordLabels[kind].singular : recordLabels[kind].plural}${matching}. The ${PageRegistry.recordTab(kind).title} tab is open.`
+        : `${who} has no ${which}${recordLabels[kind].plural}${matching}.`,
       { data: rows.slice(0, 25).map((r) => recordBrief(kind, r)), speak: true },
     );
   }
@@ -504,6 +612,10 @@ export class AppRuntime {
     if (!named.first) {
       const blocked = this.requirePatient(`add a ${recordLabels[kind].singular}`, true);
       if (blocked) return blocked;
+    } else if (!this.state().currentPatientId) {
+      // The form opens on a patient's Summary: with nobody selected, the first one named is (as the care plan does).
+      this.deps.setCurrentPatient(named.first.id);
+      await sleep(60);
     }
     return withHeard(await this.openRecords(kind, named.items), named.heard);
   }
@@ -546,6 +658,7 @@ export class AppRuntime {
       await waitFor(() => !existing.isOpen(), 1500);
     }
     controller.openCreate();
+    this.editing = false;
     const form = await waitFor(() => FormRegistry.get(kind), 3000);
     if (!form) return fail(`The ${recordLabels[kind].singular} form did not open.`);
     await waitFor(() => form.isOpen(), 1500);
@@ -568,7 +681,21 @@ export class AppRuntime {
     });
   }
 
-  async updateRecord(kind: RecordKind, record: string, changes: FieldValues): Promise<ToolResult> {
+  /** The patient a record tool names: selected first when it is not the selected one. */
+  private async usePatient(patient?: string): Promise<ToolResult | null> {
+    if (!patient) return null;
+    const found = this.resolvePatient(patient);
+    if ('ok' in found) return found;
+    if (found.patient.id !== this.state().currentPatientId) {
+      this.deps.setCurrentPatient(found.patient.id);
+      await sleep(60);
+    }
+    return null;
+  }
+
+  async updateRecord(kind: RecordKind, record: string, changes: FieldValues, patient?: string): Promise<ToolResult> {
+    const chose = await this.usePatient(patient);
+    if (chose) return chose;
     const blocked = this.requirePatient(`change a ${recordLabels[kind].singular}`);
     if (blocked) return blocked;
     if (this.preparedThisTurn()) return fail(WAITING_ON_PROVIDER);
@@ -588,6 +715,7 @@ export class AppRuntime {
     }
     const id = (found.row as { id: string }).id;
     if (!controller.openEdit(id)) return fail(`I couldn't open that ${recordLabels[kind].singular} for editing.`);
+    this.editing = true;
     const form = await waitFor(() => FormRegistry.get(kind), 3000);
     if (!form) return fail(`The ${recordLabels[kind].singular} form did not open.`);
     await waitFor(() => form.isOpen(), 1500);
@@ -599,10 +727,14 @@ export class AppRuntime {
     return { ...filled, message: `${label}: ${filled.message}` };
   }
 
-  async deleteRecord(kind: RecordKind, record: string): Promise<ToolResult> {
-    const blocked = this.requirePatient(`delete a ${recordLabels[kind].singular}`);
+  async deleteRecord(kind: RecordKind, record: string | undefined, opts: { all?: boolean; patient?: string } = {}): Promise<ToolResult> {
+    const chose = await this.usePatient(opts.patient);
+    if (chose) return chose;
+    const blocked = this.requirePatient(`delete ${opts.all ? `${recordLabels[kind].plural}` : `a ${recordLabels[kind].singular}`}`);
     if (blocked) return blocked;
     if (this.preparedThisTurn()) return fail(WAITING_ON_PROVIDER);
+    if (opts.all) return this.deleteAll(kind);
+    if (!record) return fail(`Which ${recordLabels[kind].singular}? Give record (its name as the provider said it), or all: true only if they asked to delete all of them.`);
     const found = this.resolveRecord(kind, record);
     if ('ok' in found) return found;
     const label = recordLabel(kind, found.row);
@@ -619,6 +751,28 @@ export class AppRuntime {
       recordId: (found.row as { id: string }).id,
     });
     return ask(`Delete the ${recordLabels[kind].singular} "${label}"? This cannot be undone. Please confirm or cancel.`);
+  }
+
+  /** Every record of a kind, for the selected patient: listed on screen, deleted together on one confirmation. */
+  private async deleteAll(kind: RecordKind): Promise<ToolResult> {
+    const rows = this.deps.getRecords(kind) as Array<AnyRecord & { id: string }>;
+    const who = this.state().currentPatientName ?? 'this patient';
+    const { singular, plural: many } = recordLabels[kind];
+    if (!rows.length) return ok(`${who} has no ${many} — nothing to delete.`);
+    await this.ensureModule(kind);
+    RecordRegistry.get(kind)?.setSearch('');
+    const labels = rows.map((r) => recordLabel(kind, r));
+    this.stage({
+      kind: 'delete',
+      formId: kind,
+      formTitle: `Delete all ${many}`,
+      summary: labels.map((value, i) => ({ label: `${singular[0].toUpperCase()}${singular.slice(1)} ${i + 1}`, value })),
+      description: `Permanently delete all ${rows.length} ${rows.length === 1 ? singular : many} of ${who}`,
+      recordKind: kind,
+      recordIds: rows.map((r) => r.id),
+    });
+    const shown = labels.length > 6 ? `${labels.slice(0, 6).join(', ')} and ${labels.length - 6} more` : labels.join(', ');
+    return ask(`This will delete all ${rows.length} ${rows.length === 1 ? singular : many} for ${who} (${shown}). This cannot be undone. Do you want to continue?`);
   }
 
   // ----------------------------------------------------------------- forms
@@ -1007,8 +1161,23 @@ export class AppRuntime {
     return this.nextStep(def, controller, [], []);
   }
 
+  /** The assistant is saving or cancelling what it prepared — a form closing now is its doing, not the provider's. */
+  private settling = 0;
+  isSettling() {
+    return this.settling > 0;
+  }
+
   /** The only place data is actually written or removed. */
   async confirm(): Promise<ToolResult> {
+    this.settling++;
+    try {
+      return await this.confirmPending();
+    } finally {
+      this.settling--;
+    }
+  }
+
+  private async confirmPending(): Promise<ToolResult> {
     const pending = this.state().pendingConfirmation;
     if (!pending) return fail('Nothing is waiting for confirmation.');
     if (this.origin === 'assistant' && this.turn !== null && this.pendingTurn === this.turn) {
@@ -1026,6 +1195,12 @@ export class AppRuntime {
       return ok(pending.inboxFile !== false ? 'Record filed.' : 'Record moved back to unfiled.');
     }
 
+    if (pending.kind === 'delete' && pending.recordKind && pending.recordIds?.length) {
+      for (const id of pending.recordIds) await this.deps.deleteEntity(pending.recordKind, id);
+      this.deps.setPendingConfirmation(null);
+      const n = pending.recordIds.length;
+      return ok(`Deleted all ${n} ${n === 1 ? recordLabels[pending.recordKind as RecordKind].singular : recordLabels[pending.recordKind as RecordKind].plural}.`);
+    }
     if (pending.kind === 'delete' && pending.recordKind && pending.recordId) {
       await this.deps.deleteEntity(pending.recordKind, pending.recordId);
       this.deps.setPendingConfirmation(null);
@@ -1128,19 +1303,48 @@ export class AppRuntime {
     return snap.items.slice(0, 15).map((item, i) => ({ position: i + 1, subject: item.subject, category: item.category, patient: item.patientName, received: item.receivedAt.slice(0, 10), filed: snap.isFiled(item.id), attention: item.attention }));
   }
 
-  async inboxShow(args: { category?: InboxView; scope?: 'selected_patient' | 'all_patients'; search?: string }): Promise<ToolResult> {
+  /**
+   * Whose Inbox records a request is about: a patient named in it (no need to select them first — another
+   * agent may be selecting someone at the same time), every patient's, the selected one's, or — none of
+   * these said — whatever the Inbox shows. Id null: every patient's.
+   */
+  private inboxScope(args: { patient?: string; scope?: 'selected_patient' | 'all_patients' }): { id: string | null; name?: string } | undefined | ToolResult {
+    if (args.patient) {
+      const found = this.resolvePatient(args.patient);
+      if ('ok' in found) return found;
+      return { id: found.patient.id, name: found.patient.fullName };
+    }
+    if (args.scope === 'all_patients') return { id: null };
+    if (args.scope === 'selected_patient') {
+      const state = this.state();
+      if (!state.currentPatientId) return fail('No patient is selected, so the Inbox cannot be limited to one.');
+      return { id: state.currentPatientId, name: state.currentPatientName ?? undefined };
+    }
+    return undefined;
+  }
+
+  private async setInboxScope(controller: InboxVoiceController, scope: { id: string | null }) {
+    if (controller.snapshot().scopePatientId === scope.id) return;
+    controller.setPatientScope(scope.id);
+    await waitFor(() => controller.snapshot().scopePatientId === scope.id, 2000);
+  }
+
+  /** Whose records the Inbox shows, in words. */
+  private inboxScopeName(scopePatientId: string | null, named?: string) {
+    if (!scopePatientId) return ' for all patients';
+    return ` for ${named ?? this.deps.allPatients().find((p) => p.id === scopePatientId)?.fullName ?? this.state().currentPatientName ?? 'the selected patient'}`;
+  }
+
+  async inboxShow(args: { category?: InboxView; scope?: 'selected_patient' | 'all_patients'; patient?: string; search?: string }): Promise<ToolResult> {
+    const scope = this.inboxScope(args);
+    if (scope && 'ok' in scope) return scope;
     const controller = await this.ensureInbox(args.category ?? 'all');
     if ('ok' in controller) return controller;
     if (args.category && controller.snapshot().view !== args.category) {
       controller.setView(args.category);
       await waitFor(() => controller.snapshot().view === args.category, 2500);
     }
-    if (args.scope) {
-      const target = args.scope === 'all_patients' ? null : this.state().currentPatientId;
-      if (args.scope === 'selected_patient' && !target) return fail('No patient is selected, so the Inbox cannot be limited to one.');
-      controller.setPatientScope(target);
-      await waitFor(() => controller.snapshot().scopePatientId === target, 2000);
-    }
+    if (scope) await this.setInboxScope(controller, scope);
     if (args.search !== undefined) {
       controller.setQuery(args.search);
       await waitFor(() => controller.snapshot().query === args.search, 2000);
@@ -1148,8 +1352,8 @@ export class AppRuntime {
     await sleep(40);
     const snap = controller.snapshot();
     const noun = inboxNoun[snap.view];
-    const scope = snap.scopePatientId ? ` for ${this.state().currentPatientName ?? 'the selected patient'}` : ' for all patients';
-    return ok(`Showing ${snap.view === 'all' ? 'the whole Inbox' : categoryMeta[snap.view].label}${scope}${snap.query ? `, searched for "${snap.query}"` : ''}: ${snap.items.length} ${snap.items.length === 1 ? noun.one : noun.many}.`, {
+    const scopeText = this.inboxScopeName(snap.scopePatientId, scope?.name);
+    return ok(`Showing ${snap.view === 'all' ? 'the whole Inbox' : categoryMeta[snap.view].label}${scopeText}${snap.query ? `, searched for "${snap.query}"` : ''}: ${snap.items.length} ${snap.items.length === 1 ? noun.one : noun.many}.`, {
       data: this.inboxList(controller),
     });
   }
@@ -1188,9 +1392,7 @@ export class AppRuntime {
     controller.open(item);
     await waitFor(() => controller.snapshot().openItem?.id === item.id, 2500);
     this.lastInboxIndex = controller.snapshot().items.findIndex((i) => i.id === item.id);
-    const state = this.state();
-    const otherPatient = state.currentPatientId && item.patientId !== state.currentPatientId ? ` It belongs to ${item.patientName}, not the selected patient.` : '';
-    return ok(`Opened ${categoryMeta[item.category].singular} "${item.subject}" for ${item.patientName}.${controller.snapshot().isFiled(item.id) ? ' It is already filed.' : ''}${otherPatient}`, {
+    return ok(`Opened ${categoryMeta[item.category].singular} "${item.subject}" for ${item.patientName}.${controller.snapshot().isFiled(item.id) ? ' It is already filed.' : ''}`, {
       data: { subject: item.subject, from: item.from, received: item.receivedAt, status: item.status, preview: item.preview, attention: item.attentionReason ?? null, body: item.body?.slice(0, 1200) ?? null, facts: item.meta },
     });
   }
@@ -1208,11 +1410,8 @@ export class AppRuntime {
     const found = this.resolveInboxTarget(controller, target);
     if ('ok' in found) return found;
     const { item } = found;
-    // Patient safety: filing acts on the selected patient's records only.
-    const state = this.state();
-    if (item.patientId !== state.currentPatientId) {
-      return fail(`"${item.subject}" belongs to ${item.patientName}, not the selected patient${state.currentPatientName ? ` (${state.currentPatientName})` : ''}. Nothing was changed. Select ${item.patientName} first.`);
-    }
+    // The Inbox spans every patient: filing never depends on who is selected. The record is named with its
+    // patient — in the confirmation, and in what is said back.
     const isFiled = controller.snapshot().isFiled(item.id);
     if (file === isFiled) return ok(`"${item.subject}" is already ${file ? 'filed' : 'unfiled'}.`);
     if (getConfirmFiling()) {
@@ -1233,7 +1432,7 @@ export class AppRuntime {
       return ask(`${file ? 'File' : 'Unfile'} "${item.subject}" for ${item.patientName}? Please confirm or cancel.`);
     }
     controller.file([item.id], file);
-    return ok(file ? `Filed "${item.subject}".` : `Moved "${item.subject}" back to unfiled.`);
+    return ok(file ? `Filed "${item.subject}" for ${item.patientName}.` : `Moved "${item.subject}" for ${item.patientName} back to unfiled.`);
   }
 
   /**
@@ -1242,15 +1441,28 @@ export class AppRuntime {
    * a comment changes no clinical data, and each one can be deleted from the record).
    * "All" follows the Inbox's patient scope: the selected patient's records, or every patient's.
    */
-  async inboxAddComment(args: { text: string; target?: number | 'this' | 'next' | 'previous' | 'last'; which?: 'abnormal' | 'normal' | 'needs_attention' | 'unfiled' | 'all'; category?: InboxView }): Promise<ToolResult> {
+  async inboxAddComment(args: { text: string; target?: number | 'this' | 'next' | 'previous' | 'last'; which?: 'abnormal' | 'normal' | 'needs_attention' | 'unfiled' | 'all'; category?: InboxView; patient?: string; scope?: 'selected_patient' | 'all_patients' }): Promise<ToolResult> {
     const text = String(args.text ?? '').trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
     if (!text) return fail('What should the comment say? Nothing was added.');
+    let scoped = this.inboxScope(args);
+    if (scoped && 'ok' in scoped) return scoped;
+    // Whose records a comment on "all normal records" goes on comes from what the provider said — never from
+    // the patient the Inbox happens to open on (the selected one: "select Tom Baker and comment on all
+    // patients' normal records" is every patient's). On screen already, the Inbox shows what they look at;
+    // with nobody selected, it opens on every patient's records.
+    const onScreen = !!InboxVoiceRegistry.get();
+    if (!scoped && args.which) {
+      if (EVERY_PATIENT.test(this.said)) scoped = { id: null };
+      // Opening now, the Inbox would show the selected patient's records alone: whose was not said.
+      else if (!onScreen && this.state().currentPatientId) return fail(`Whose ${args.which === 'all' ? '' : `${args.which.replace('_', ' ')} `}records? Call again with scope all_patients (every patient's), scope selected_patient, or patient (a name) — as the provider said it. Nothing was added.`);
+    }
     const controller = await this.ensureInbox(args.category ?? 'all');
     if ('ok' in controller) return controller;
     if (args.category && controller.snapshot().view !== args.category) {
       controller.setView(args.category);
       await waitFor(() => controller.snapshot().view === args.category, 2500);
     }
+    if (scoped) await this.setInboxScope(controller, scoped);
     const snap = controller.snapshot();
 
     let items: InboxItem[];
@@ -1268,7 +1480,7 @@ export class AppRuntime {
         .filter((i) => (!snap.scopePatientId || i.patientId === snap.scopePatientId) && (!args.category || args.category === 'all' || i.category === args.category) && matches[args.which!](i));
       const noun = inboxNoun[args.category ?? 'all'];
       const kind = { abnormal: 'abnormal ', normal: 'normal ', needs_attention: 'needing-attention ', unfiled: 'unfiled ', all: '' }[args.which];
-      const scope = snap.scopePatientId ? ` for ${this.state().currentPatientName ?? 'the selected patient'}` : '';
+      const scope = snap.scopePatientId ? this.inboxScopeName(snap.scopePatientId, scoped?.name) : scoped ? ' for all patients' : '';
       if (!items.length) return fail(`There are no ${kind}${noun.many} in the Inbox${scope}. Nothing was added.`);
       what = `${items.length} ${kind}${items.length === 1 ? noun.one : noun.many}${scope}`;
     } else {
@@ -1479,6 +1691,29 @@ export class AppRuntime {
     if (!form) return fail(`The ${recordLabels[kind].singular} form did not open.`);
     await sleep(80);
     return this.fill(kind, form, [{}], 'active');
+  }
+
+  // ------------------------------------------------------------- summaries
+
+  /**
+   * A summary of what was asked about — any page, the dashboard, Inbox records, a patient's chart. Nothing on
+   * screen moves: it opens in the Summary panel, and the reply is one line.
+   */
+  async summarize(what: string | undefined, opts: { llm?: ChatLLM | null; signal?: AbortSignal } = {}): Promise<ToolResult> {
+    return (await this.summaryOf(what, opts)).result;
+  }
+
+  /** The same, with what was written (the Summary Agent's trace). */
+  async summaryOf(what: string | undefined, opts: { llm?: ChatLLM | null; signal?: AbortSignal } = {}): Promise<{ result: ToolResult; outcome?: SummaryOutcome }> {
+    if (!this.deps.summarize) return { result: fail('Summaries are not available here.') };
+    // What the model said it is of; without it, the provider's own words this turn.
+    const text = what?.trim() || this.said;
+    // `said`: what the provider said this turn — what the summary is of when the task's words do not say.
+    const outcome = await this.deps.summarize({ text, said: this.said, llm: opts.llm, signal: opts.signal });
+    const result = ok(outcome.empty ? `${outcome.text} (The Summary panel shows it.)` : `Here's the summary — ${outcome.title}, ${outcome.scope}. It's open in the Summary panel.`, {
+      data: { summary: outcome.text, of: outcome.title, scope: outcome.scope },
+    });
+    return { result, outcome };
   }
 
   // ------------------------------------------------------------- dashboard

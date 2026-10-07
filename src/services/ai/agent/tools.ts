@@ -16,6 +16,7 @@ import { FieldRegistry, type FieldDefinition } from '@/registry/fieldRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
 import { RECORD_KINDS, type RecordKind } from '@/types/records';
 import type { FieldValues } from '@/types/ai';
+import { LLM_PROVIDERS, type LLMProviderKind } from '@/services/ai/config';
 import { defineTool, noArgs, type Tool } from './tool';
 
 const plural: Record<RecordKind, string> = { medication: 'medications', diagnosis: 'diagnoses', task: 'tasks', recall: 'recalls', appointment: 'appointments' };
@@ -80,6 +81,109 @@ const inboxTarget = z
   .union([z.number().int().positive(), z.enum(['this', 'next', 'previous', 'last'])])
   .describe('A position in the Inbox list on screen (1 = first), or this / next / previous / last');
 
+/** JSON sent as text is the JSON it holds. */
+function parsedJson(v: unknown): unknown {
+  if (typeof v !== 'string' || !/^\s*[[{]/.test(v)) return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v;
+  }
+}
+
+/**
+ * The list an add_* tool takes, as small models send it: one record on its own (its fields at the top level, or
+ * one object instead of a list), or the list as JSON text — read as the list it means. Nothing is added.
+ */
+export function listShaped(raw: Record<string, unknown>, key: string, fields: string[]): Record<string, unknown> {
+  const out = { ...raw };
+  let list = parsedJson(out[key]);
+  if (list && !Array.isArray(list) && typeof list === 'object') list = [list];
+  if (list === undefined) {
+    const own = Object.fromEntries(Object.entries(out).filter(([k]) => fields.includes(k) && k !== 'patient'));
+    if (Object.keys(own).length) {
+      list = [own];
+      for (const k of Object.keys(own)) delete out[k];
+    }
+  }
+  if (Array.isArray(list)) out[key] = list.map((r) => parsedJson(r));
+  if (out.for_patients !== undefined) out.for_patients = parsedJson(out.for_patients);
+  return out;
+}
+
+export type RecordKindToolName = 'add_care_plan' | 'update_record' | 'delete_record' | 'list_records';
+
+const CARE_PLAN_ALL_KINDS =
+  'Add records of SEVERAL kinds at once — e.g. medications plus a diagnosis, a task, a recall and an appointment said in one request. Opens the Care Plan on the Summary: one tab per kind, one tab per record, all filled with what was said, saved together after one confirmation. Give patient to select that patient first. Each list uses the same fields as the matching add_* tool; a dose, frequency or duration said once after a list of drugs applies to each drug of the list (each medication gets its own copy), unless a drug was said with its own.';
+
+/**
+ * The tools that take a record kind, over these kinds only. With every kind they are the single
+ * assistant's tools, word for word; a specialist of the multi-agent mode gets them over the kinds it owns
+ * (the Medication Agent: medications only; the Appointments Agent: appointments only …). The same runtime
+ * methods run either way — only what the model may ask for is narrower.
+ */
+export function recordKindTools(kinds: readonly RecordKind[] = RECORD_KINDS): Record<RecordKindToolName, Tool> {
+  const all = kinds.length === RECORD_KINDS.length;
+  const kindEnum = z.enum(kinds as [RecordKind, ...RecordKind[]]);
+  const kindList = kinds.map((k) => plural[k]).join(', ');
+  return {
+    add_care_plan: defineTool({
+      name: 'add_care_plan',
+      description: all
+        ? CARE_PLAN_ALL_KINDS
+        : `Add records of SEVERAL kinds at once (${kindList}) said in one request. Opens the Care Plan on the Summary: one tab per kind, one tab per record, all filled with what was said, saved together after one confirmation. Give patient to select that patient first. Each list uses the same fields as the matching add_* tool; a dose, frequency or duration said once after a list of drugs applies to each drug of the list (each medication gets its own copy), unless a drug was said with its own.`,
+      parameters: z.object({
+        patient: z.string().optional().describe('Patient full name, id or MRN when the provider names one; omit for the selected patient'),
+        for_patients: forPatients,
+        ...Object.fromEntries(kinds.map((kind) => [plural[kind], z.array(formSchema(kind)).optional()])),
+      }),
+      progress: () => 'Opening the care plan…',
+      run: (args, { runtime }) => {
+        const { patient, for_patients, ...lists } = args as { patient?: string; for_patients?: string[] } & Record<string, FieldValues[] | undefined>;
+        return runtime.addCarePlan({ patient, forPatients: for_patients, items: Object.fromEntries(RECORD_KINDS.map((kind) => [kind, lists[plural[kind]] ?? []])) });
+      },
+    }),
+    update_record: defineTool({
+      name: 'update_record',
+      description:
+        "Change an existing record of the selected patient (or the patient named): opens it for editing and writes only the given changes, then asks for confirmation. `changes` holds ONLY the fields the provider is changing, with the same names and values as the matching add_* tool (e.g. {\"frequency\": \"Twice daily\"}, {\"status\": \"Discontinued\"}) — never the record's other fields.",
+      parameters: z.object({
+        kind: kindEnum,
+        record: z.string().describe("The record's id if you have it, otherwise its name/title as the user said it — no need to look it up first"),
+        changes: z.record(z.string(), scalar).describe('Field name → new value, only the fields being changed'),
+        patient: z.string().optional().describe('The patient the provider named, when not the selected one — they are selected first'),
+      }),
+      progress: ({ kind }) => `Opening the ${kind} for editing…`,
+      run: ({ kind, record, changes, patient }, { runtime }) => runtime.updateRecord(kind, record, changes, patient),
+    }),
+    delete_record: defineTool({
+      name: 'delete_record',
+      description:
+        'Delete a record of the selected patient (or the patient named) — or, with all: true, EVERY record of that kind ("delete all medications": no record, no other field). Shows what will be deleted and asks the provider to confirm; nothing is deleted until they do.',
+      parameters: z.object({
+        kind: kindEnum,
+        record: z.string().optional().describe("One record: its id if you have it, otherwise its name/title as the user said it. Leave out with all: true"),
+        all: z.boolean().optional().describe('true only when the provider asked to delete ALL of them ("delete all medications")'),
+        patient: z.string().optional().describe('The patient the provider named, when not the selected one — they are selected first'),
+      }),
+      progress: ({ kind, all }) => (all ? `Gathering every ${kind}…` : `Finding the ${kind}…`),
+      run: ({ kind, record, all, patient }, { runtime }) => runtime.deleteRecord(kind, record, { all: all === true, patient }),
+    }),
+    list_records: defineTool({
+      name: 'list_records',
+      description: "The SELECTED PATIENT's (or the named patient's) records of one kind (with ids), shown in their Summary tab — to answer questions about that patient's records or find a record's id. Not for the provider's own schedule (get_provider_overview).",
+      parameters: z.object({
+        kind: kindEnum,
+        status: z.string().optional().describe('Only records with this status, e.g. Active, Open, Due'),
+        search: z.string().optional().describe('Only records with these words in them (a drug, a condition, a title) — to search or get one'),
+        patient: z.string().optional().describe('The patient the provider named, when not the selected one — they are selected first'),
+      }),
+      progress: ({ kind, search }) => (search ? `Searching the ${plural[kind]} for “${search}”…` : `Reading the ${plural[kind]}…`),
+      run: ({ kind, status, search, patient }, { runtime }) => runtime.listRecords(kind, status, patient, search),
+    }),
+  };
+}
+
 export function buildTools(): Tool[] {
   const pages = PageRegistry.all();
   const pageIds = pages.map((p) => p.id) as [string, ...string[]];
@@ -87,6 +191,7 @@ export function buildTools(): Tool[] {
   const patientFields = formSchema('patient');
   const patientFieldNames = FieldRegistry.getForm('patient')!.fields.map((f) => f.name) as [string, ...string[]];
   const summaryTabs = PageRegistry.summaryTabs().map((p) => p.id) as [string, ...string[]];
+  const kindTools = recordKindTools();
 
   const tools: Tool[] = [
     // ---------------------------------------------------------------- pages
@@ -129,6 +234,16 @@ export function buildTools(): Tool[] {
         page: z.union([z.number().int().positive(), z.enum(['next', 'previous', 'first', 'last'])]).optional(),
       }),
       run: (args, { runtime }) => runtime.controlList(args),
+    }),
+    defineTool({
+      name: 'summarize',
+      description:
+        "Write a summary of anything in the app — the dashboard or the provider's day, Inbox records (\"all normal inbox records\", \"abnormal labs\", \"Tom Baker's unfiled radiology\"), any page or tab (\"this page\"), a patient's chart or one kind of their records. The app gathers the data and opens the summary in the Summary panel; reply with one short line. Never scroll, open pages or select anything for a summary.",
+      parameters: z.object({
+        what: z.string().optional().describe("What to summarize, in the provider's words (e.g. \"all inbox normal records\", \"my day\", \"Tom Baker's medications\"); leave out for the page on screen"),
+      }),
+      progress: () => 'Writing the summary…',
+      run: ({ what }, { runtime }) => runtime.summarize(what),
     }),
     defineTool({
       name: 'patient_summary_panel',
@@ -197,58 +312,29 @@ export function buildTools(): Tool[] {
     }),
 
     // -------------------------------------------------------------- records
-    defineTool({
-      name: 'add_care_plan',
-      description:
-        'Add records of SEVERAL kinds at once — e.g. medications plus a diagnosis, a task, a recall and an appointment said in one request. Opens the Care Plan on the Summary: one tab per kind, one tab per record, all filled with what was said, saved together after one confirmation. Give patient to select that patient first. Each list uses the same fields as the matching add_* tool; a dose, frequency or duration said once after a list of drugs applies to each drug of the list (each medication gets its own copy), unless a drug was said with its own.',
-      parameters: z.object({
-        patient: z.string().optional().describe('Patient full name, id or MRN when the provider names one; omit for the selected patient'),
-        for_patients: forPatients,
-        ...Object.fromEntries(RECORD_KINDS.map((kind) => [plural[kind], z.array(formSchema(kind)).optional()])),
-      }),
-      progress: () => 'Opening the care plan…',
-      run: (args, { runtime }) => {
-        const { patient, for_patients, ...lists } = args as { patient?: string; for_patients?: string[] } & Record<string, FieldValues[] | undefined>;
-        return runtime.addCarePlan({ patient, forPatients: for_patients, items: Object.fromEntries(RECORD_KINDS.map((kind) => [kind, lists[plural[kind]] ?? []])) });
-      },
-    }),
+    kindTools.add_care_plan,
     ...RECORD_KINDS.map((kind) =>
       defineTool({
         name: `add_${plural[kind]}`,
         description: `Add one or more ${plural[kind]} (and nothing else) for the selected patient or for the patients named — no need to select them first: opens the ${kind} form (one tab per patient, one tab per ${kind}) filled with what was said. The app asks for missing required fields and for confirmation before saving. When that form is already open (CONTEXT: open form), the new records are ADDED to it as more tabs — never save, confirm or cancel it first; saving is the provider's. With records of other kinds in the same request use add_care_plan.`,
-        parameters: z.object({ [plural[kind]]: z.array(formSchema(kind)).min(1), for_patients: forPatients }),
+        parameters: z.object({
+          [plural[kind]]: z.array(formSchema(kind)).min(1),
+          patient: z.string().optional().describe('ONE patient the provider named for all of these records (full name or MRN) — no need to select them first; omit for the selected patient'),
+          for_patients: forPatients,
+        }),
         progress: () => `Opening the ${kind} form…`,
+        normalize: (raw) => listShaped(raw, plural[kind], FieldRegistry.getForm(kind)!.fields.map((f) => f.name)),
         run: (args, { runtime }) => {
-          const { for_patients, ...lists } = args as { for_patients?: string[] } & Record<string, FieldValues[]>;
-          return runtime.createRecords(kind, lists[plural[kind]], for_patients);
+          const { for_patients, patient, ...lists } = args as { for_patients?: string[]; patient?: string } & Record<string, FieldValues[]>;
+          // One patient named for all of them: each record is theirs (a record naming its own patient keeps it).
+          const items = patient && !for_patients?.length ? lists[plural[kind]].map((r) => (r.patient ? r : { ...r, patient })) : lists[plural[kind]];
+          return runtime.createRecords(kind, items, for_patients);
         },
       }),
     ),
-    defineTool({
-      name: 'update_record',
-      description:
-        "Change an existing record of the selected patient: opens it for editing and writes only the given changes, then asks for confirmation. `changes` uses the same field names and values as the matching add_* tool (e.g. {\"status\": \"Discontinued\"}, {\"dueDate\": \"2026-10-01\"}).",
-      parameters: z.object({
-        kind: recordKind,
-        record: z.string().describe("The record's id if you have it, otherwise its name/title as the user said it — no need to look it up first"),
-        changes: z.record(z.string(), scalar).describe('Field name → new value'),
-      }),
-      progress: ({ kind }) => `Opening the ${kind} for editing…`,
-      run: ({ kind, record, changes }, { runtime }) => runtime.updateRecord(kind, record, changes),
-    }),
-    defineTool({
-      name: 'delete_record',
-      description: 'Delete a record of the selected patient. Shows it and asks the user to confirm; nothing is deleted until they do.',
-      parameters: z.object({ kind: recordKind, record: z.string().describe("The record's id if you have it, otherwise its name/title as the user said it — no need to look it up first") }),
-      run: ({ kind, record }, { runtime }) => runtime.deleteRecord(kind, record),
-    }),
-    defineTool({
-      name: 'list_records',
-      description: "The SELECTED PATIENT's records of one kind (with ids), shown in their Summary tab — to answer questions about that patient's records or find a record's id. Not for the provider's own schedule (get_provider_overview).",
-      parameters: z.object({ kind: recordKind, status: z.string().optional().describe('Only records with this status, e.g. Active, Open, Due') }),
-      progress: ({ kind }) => `Reading the ${plural[kind]}…`,
-      run: ({ kind, status }, { runtime }) => runtime.listRecords(kind, status),
-    }),
+    kindTools.update_record,
+    kindTools.delete_record,
+    kindTools.list_records,
 
     // ---------------------------------------------------------------- forms
     defineTool({
@@ -297,7 +383,7 @@ export function buildTools(): Tool[] {
     }),
     defineTool({
       name: 'get_patient_summary',
-      description: "An overview of the selected patient built from their records: conditions, medications, tasks, recalls and appointments. Use it when asked about the patient as a whole.",
+      description: "The selected patient's records in brief (conditions, medications, tasks, recalls, appointments) — to answer a question about the patient. A summary the provider asks for is summarize.",
       parameters: noArgs,
       progress: () => 'Summarising the patient…',
       run: async (_, { runtime }) => runtime.patientSummary(),
@@ -391,6 +477,7 @@ export function buildTools(): Tool[] {
       parameters: z.object({
         category: z.enum(['all', 'lab', 'radiology', 'referral', 'discharge']).optional(),
         scope: z.enum(['selected_patient', 'all_patients']).optional().describe("Only the selected patient's items, or every patient's"),
+        patient: z.string().optional().describe("Only this patient's items (name, MRN or id) — no need to select them first"),
         search: z.string().optional().describe('Text to search for; an empty string clears the search'),
       }),
       progress: () => 'Opening the Inbox…',
@@ -405,7 +492,7 @@ export function buildTools(): Tool[] {
     }),
     defineTool({
       name: 'inbox_file_item',
-      description: 'File an Inbox record as reviewed (file = true) or move it back to unfiled (file = false). Only records of the selected patient; asks for confirmation.',
+      description: 'File an Inbox record as reviewed (file = true) or move it back to unfiled (file = false) — any patient\'s record: no patient needs to be selected. May ask for confirmation.',
       parameters: z.object({ file: z.boolean(), target: inboxTarget.optional() }),
       run: async ({ file, target }, { runtime }) => runtime.inboxFile(file, target ?? 'this'),
     }),
@@ -415,8 +502,10 @@ export function buildTools(): Tool[] {
         'Add a comment (the provider\'s words, e.g. "Test is good") to Inbox records: to one record (target), or to every record of a kind (which, e.g. all abnormal records). Every Inbox record is either Abnormal or Normal. Opens the Inbox itself and adds the comment at once.',
       parameters: z.object({
         text: z.string().describe('The comment, exactly as the provider said it'),
-        which: z.enum(['abnormal', 'normal', 'needs_attention', 'unfiled', 'all']).optional().describe('Comment on every record of this kind; leave out for one record'),
+        which: z.enum(['abnormal', 'normal', 'needs_attention', 'unfiled', 'all']).optional().describe('Comment on every record of this kind (and say whose: scope or patient); leave out for one record'),
         category: z.enum(['all', 'lab', 'radiology', 'referral', 'discharge']).optional(),
+        patient: z.string().optional().describe("With which: one named patient's records (name, MRN or id) — no need to select them first"),
+        scope: z.enum(['selected_patient', 'all_patients']).optional().describe("With which: all_patients — every patient's records (\"all patients\", \"everyone's\"); selected_patient — the selected patient's (\"his\", \"this patient's\")"),
         target: inboxTarget.optional().describe('One record: its position in the list, or "this" for the open one'),
       }),
       progress: () => 'Preparing the comment…',
@@ -450,7 +539,7 @@ export function buildTools(): Tool[] {
       description: 'Change the language model the assistant runs on, or its settings. The model must be installed (get_ai_configuration lists them) and able to call tools. Only give what the provider asked to change.',
       parameters: z.object({
         model: z.string().optional().describe('Installed model name, e.g. qwen3.5:2b'),
-        runtime: z.enum(['ollama', 'openai-compatible', 'bridge']).optional(),
+        runtime: z.enum(LLM_PROVIDERS as [LLMProviderKind, ...LLMProviderKind[]]).optional().describe('ollama = this computer; vllm; openrouter; openai-compatible; bridge'),
         server_url: z.string().optional(),
         context_window: z.number().int().optional().describe('Tokens'),
         gpu_layers: z.number().int().min(0).optional().describe('99 = whole model on the GPU, 0 = CPU'),

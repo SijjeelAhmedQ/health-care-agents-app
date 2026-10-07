@@ -1,6 +1,6 @@
 import { forwardRef, useState } from 'react';
 import { Badge, Button, DatePicker, Dropdown, Input, Modal, Popover, Segmented, Select, Tooltip, type InputRef } from 'antd';
-import { ArrowDownUp, Bookmark, BookmarkPlus, Keyboard, Rows2, Rows3, Search, SlidersHorizontal, Trash2, TriangleAlert, X } from 'lucide-react';
+import { ArrowDownUp, Bookmark, BookmarkPlus, Keyboard, Rows2, Rows3, Search, SlidersHorizontal, Trash2, TriangleAlert, Users, X } from 'lucide-react';
 import dayjs from 'dayjs';
 import {
   activeFilterCount,
@@ -29,6 +29,10 @@ interface Props {
   compact: boolean;
   density: InboxDensity;
   onDensity: (density: InboxDensity) => void;
+  /** One patient's items only (id), or every patient's (null). */
+  patient: string | null;
+  patientOptions: Array<{ value: string; label: string; search: string; mrn: string }>;
+  onPatient: (id: string | null) => void;
 }
 
 const toOptions = (values: string[]) => values.map((v) => ({ value: v, label: v }));
@@ -58,7 +62,7 @@ export const shortcutList: Array<[string, string]> = [
  * Everything applies as it changes; there is no separate "Search" step.
  */
 export const InboxToolbar = forwardRef<InputRef, Props>(function InboxToolbar(
-  { value, onChange, onReset, sort, onSort, options, savedNames, onSaveView, onLoadView, onDeleteView, canSave, compact, density, onDensity },
+  { value, onChange, onReset, sort, onSort, options, savedNames, onSaveView, onLoadView, onDeleteView, canSave, compact, density, onDensity, patient, patientOptions, onPatient },
   searchRef,
 ) {
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -220,6 +224,31 @@ export const InboxToolbar = forwardRef<InputRef, Props>(function InboxToolbar(
             if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
           }}
           aria-label="Search the inbox"
+        />
+
+        {/* Whose records: every patient's unless one is chosen here — never the patient selected elsewhere. */}
+        <Select
+          className="ibx-patient-filter"
+          showSearch
+          allowClear
+          value={patient ?? undefined}
+          placeholder={
+            <span className="ibx-patient-filter-ph">
+              <Users size={14} aria-hidden /> All patients
+            </span>
+          }
+          onChange={(v) => onPatient((v as string | undefined) ?? null)}
+          options={patientOptions.map((o) => ({ value: o.value, label: o.label, search: o.search, mrn: o.mrn }))}
+          optionRender={(o) => (
+            <span className="ibx-patient-option">
+              <span>{o.data.label}</span>
+              <span className="ibx-patient-option-mrn">{(o.data as { mrn?: string }).mrn}</span>
+            </span>
+          )}
+          filterOption={(input, o) => String((o as { search?: string } | undefined)?.search ?? '').includes(input.toLowerCase())}
+          notFoundContent="No patient with Inbox items"
+          aria-label="Filter by patient"
+          popupMatchSelectWidth={false}
         />
 
         <div className="ibx-quick" role="group" aria-label="Quick filters">

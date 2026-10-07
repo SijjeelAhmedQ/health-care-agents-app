@@ -95,7 +95,7 @@ describe('My Appointments', () => {
     expect(listed.length).toBeGreaterThan(0);
     expect(listed.every((a) => byId(a.id).providerId === me().id)).toBe(true);
 
-    model.then({ calls: [call('cancel_my_appointment', { appointment: target.id, note: 'Clinic closed that afternoon' })] });
+    model.then({ calls: [call('cancel_my_appointment', { appointment: target.id, note: 'The clinic is closed' })] });
     await say(`cancel my appointment with ${target.patientName}, the clinic is closed`);
     await waitUntil(() => store.getState().voice.pendingConfirmation?.formId === 'appointment_cancel');
     expect(byId(target.id).status).not.toBe('Cancelled'); // not before the yes
@@ -105,7 +105,7 @@ describe('My Appointments', () => {
     model.calls([call('confirm_pending_action')], 'Cancelled.');
     await say('yes');
     await waitUntil(() => byId(target.id).status === 'Cancelled');
-    expect(byId(target.id).cancellationNote).toBe('Clinic closed that afternoon');
+    expect(byId(target.id).cancellationNote).toBe('The clinic is closed');
   }, TIMEOUT);
 
   it('through the assistant: reschedule with a comment; a slot where I am already booked is refused', async () => {
@@ -128,7 +128,7 @@ describe('My Appointments', () => {
 
     // Onto another of my appointments: a double booking — refused, nothing staged.
     model.then({ calls: [call('reschedule_my_appointment', { appointment: target.id, to_date: other.date, to_time: other.startTime, comment: 'Patient asked' })] });
-    await say('move it onto the other slot');
+    await say('move it onto the other slot, the patient asked');
     expect(model.lastToolResults()[0].message).toMatch(/Not bookable: .*already/);
     expect(store.getState().voice.pendingConfirmation).toBeNull();
 
@@ -217,7 +217,8 @@ describe('My Appointments', () => {
       const a = await bookFor(19, dayjs().add(43, 'day').format('YYYY-MM-DD'), '10:10');
       await renderAppAt('/summary/appointment', () => !!tabRow(a));
       model.then({ calls: [call('update_record', { kind: 'appointment', record: a.id, changes: { date: dayjs().add(45, 'day').format('YYYY-MM-DD') } })] }, { content: 'Use reschedule.' });
-      await say('change the date of that appointment');
+      // The provider names the appointment and the new date — what the model sends must come from them.
+      await say(`change the date of that follow-up appointment to ${dayjs().add(45, 'day').format('D MMMM YYYY')}`);
       expect(model.lastToolResults()[0].message).toMatch(/moved or cancelled with a reason/);
       expect(byId(a.id).date).toBe(a.date);
 

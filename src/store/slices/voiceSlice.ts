@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { AgentStep, DebugTrace, PendingConfirmation, PlanStep } from '@/types/ai';
+import type { AgentStep, DebugTrace, PendingConfirmation, PlanStep, TaskGraphSnapshot } from '@/types/ai';
 
 export type VoiceStatus =
   | 'idle'
@@ -61,6 +61,11 @@ interface VoiceState {
   busySince: number | null;
   /** The steps of the latest request, when it was long enough to be carried out in steps (progress only). */
   plan: PlanStep[] | null;
+  /**
+   * Multi-agent mode: the task graph of the latest request — the one authoritative record of its tasks.
+   * It outlives the turn while a task waits on the provider.
+   */
+  taskGraph: TaskGraphSnapshot | null;
 }
 
 const initialState: VoiceState = {
@@ -88,6 +93,7 @@ const initialState: VoiceState = {
   model: { status: 'unknown', since: null, error: null },
   busySince: null,
   plan: null,
+  taskGraph: null,
 };
 
 const voiceSlice = createSlice({
@@ -119,6 +125,13 @@ const voiceSlice = createSlice({
     },
     setPlan(state, action: PayloadAction<PlanStep[] | null>) {
       state.plan = action.payload;
+    },
+    setTaskGraph(state, action: PayloadAction<TaskGraphSnapshot | null>) {
+      state.taskGraph = action.payload;
+    },
+    /** The task graph of the request being traced (the debug panel shows it as a tree). */
+    setTraceGraph(state, action: PayloadAction<TaskGraphSnapshot | undefined>) {
+      if (state.trace) state.trace.graph = action.payload;
     },
     setResponse(state, action: PayloadAction<string | null>) {
       state.response = action.payload;
@@ -182,6 +195,7 @@ const voiceSlice = createSlice({
       state.interimTranscript = '';
       state.currentAction = null;
       state.plan = null;
+      state.taskGraph = null;
       state.response = null;
       state.requiresConfirmation = false;
       state.pendingConfirmation = null;

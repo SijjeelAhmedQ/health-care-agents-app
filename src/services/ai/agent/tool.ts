@@ -22,6 +22,8 @@ export interface ToolSpec<S extends z.ZodTypeAny> {
   parameters: S;
   /** A short "what I'm doing" line for the assistant panel while the tool runs. */
   progress?: (args: z.infer<S>) => string;
+  /** Mends the shape of what a model sent (one item outside its list, JSON as text) before it is checked. */
+  normalize?: (raw: Record<string, unknown>) => Record<string, unknown>;
   run(args: z.infer<S>, ctx: ToolContext): Promise<ToolResult>;
 }
 
@@ -31,6 +33,7 @@ export interface Tool {
   description: string;
   parameters: z.ZodTypeAny;
   progress?: (args: unknown) => string;
+  normalize?: (raw: Record<string, unknown>) => Record<string, unknown>;
   run(args: unknown, ctx: ToolContext): Promise<ToolResult>;
 }
 
@@ -82,7 +85,7 @@ function dropNulls(value: unknown): unknown {
 export type ParsedArgs = { ok: true; args: unknown } | { ok: false; error: string };
 
 export function parseArgs(tool: Tool, raw: Record<string, unknown>): ParsedArgs {
-  const result = tool.parameters.safeParse(dropNulls(raw));
+  const result = tool.parameters.safeParse(dropNulls(tool.normalize ? tool.normalize(raw) : raw));
   if (result.success) return { ok: true, args: result.data };
   const issues = result.error.issues.map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`).join('; ');
   return { ok: false, error: `Invalid arguments for ${tool.name} — ${issues}` };

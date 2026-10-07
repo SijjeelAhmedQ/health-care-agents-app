@@ -14,7 +14,9 @@
     "eval:llm": "vitest run --config vitest.eval.config.ts",
     "lint": "eslint . --ext .ts,.tsx",
     "bridge": "powershell -NoProfile -ExecutionPolicy Bypass -File python/start.ps1",
-    "bridge:health": "curl -s http://127.0.0.1:8765/api/health"
+    "bridge:health": "curl -s http://127.0.0.1:8765/api/health",
+    "live": "vitest run --config vitest.live.config.ts",
+    "agents:json": "vitest run src/services/ai/__tests__/agentJson.test.ts --update"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.5.0",

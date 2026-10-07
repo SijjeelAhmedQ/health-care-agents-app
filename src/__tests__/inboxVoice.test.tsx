@@ -140,15 +140,22 @@ describe('the Inbox through the assistant', () => {
     expect(store.getState().voice.micActive).toBe(false);
   }, TIMEOUT);
 
-  it('refuses to file without a selected patient, and tells the model why', async () => {
-    store.dispatch(setCurrentPatient(null));
-    await renderAppAt('/inbox/all', () => !!InboxVoiceRegistry.get());
-    await waitUntil(() => !inbox().snapshot().loading);
-    model.then({ calls: [call('inbox_open_item', { target: 1 })] }, { calls: [call('inbox_file_item', { file: true })] }, { content: 'Please select the patient first.' });
-    await say('file the first record');
-    expect(model.lastToolResults().at(-1)?.message).toMatch(/not the selected patient/);
-    expect(store.getState().voice.pendingConfirmation).toBeNull();
-    expect(store.getState().inbox.reviewedIds).toEqual([]);
+  it('files any patient\'s record — with nobody selected, or someone else', async () => {
+    for (const selected of [null, liam().id]) {
+      await unmountApp();
+      store.dispatch(inboxActions.markUnreviewed(store.getState().inbox.reviewedIds));
+      store.dispatch(setCurrentPatient(selected));
+      setConfirmFiling(false);
+      await renderAppAt('/inbox/all', () => !!InboxVoiceRegistry.get());
+      await waitUntil(() => !inbox().snapshot().loading);
+      const target = inbox().snapshot().items.find((i) => i.patientId !== liam().id)!;
+      const position = inbox().snapshot().items.indexOf(target) + 1;
+      model.then({ calls: [call('inbox_open_item', { target: position })] }, { calls: [call('inbox_file_item', { file: true })] }, { content: 'Filed.' });
+      await say(`file record number ${position}`);
+      await waitUntil(() => store.getState().inbox.reviewedIds.includes(target.id));
+      expect(model.lastToolResults().at(-1)?.message).toBe(`Filed "${target.subject}" for ${target.patientName}.`);
+      expect(store.getState().patients.currentPatientId).toBe(selected); // nobody was selected for it
+    }
   }, TIMEOUT);
 
   it('explains a position that is not in the list', async () => {
@@ -162,37 +169,34 @@ describe('the Inbox through the assistant', () => {
     expect(model.lastToolResults()[0].message).toMatch(/There is no .* record — the list has/);
   }, TIMEOUT);
 
-  it('the patient toggle shows only the selected patient, or everyone — and is always there', async () => {
-    const toggle = () => document.querySelector('.ibx-scope-toggle') as HTMLButtonElement;
+  it('every patient\'s records, whoever is selected — one patient only through the patient filter', async () => {
     const patientIds = () => new Set(inbox().snapshot().items.map((i) => i.patientId));
+    const filter = () => document.querySelector('.ibx-patient-filter') as HTMLElement;
 
-    // No patient: the toggle is there, off, and cannot switch on.
-    store.dispatch(setCurrentPatient(null));
-    await renderAppAt('/inbox/all', () => !!document.querySelector('.ibx-msg'));
-    expect(toggle()).not.toBeNull();
-    expect(toggle().getAttribute('aria-pressed')).toBe('false');
-    expect(toggle().textContent).toContain('All patients');
-    toggle().click();
-    await wait(200);
-    expect(toggle().getAttribute('aria-pressed')).toBe('false');
-    expect(patientIds().size).toBeGreaterThan(1);
-
-    // With a patient: on → only theirs, off → everyone again.
+    // A patient selected elsewhere changes nothing: every patient's records are listed.
     store.dispatch(setCurrentPatient(liam().id));
-    await wait(150); // let the page re-render with the selected patient
-    toggle().click();
-    await waitUntil(() => toggle().getAttribute('aria-pressed') === 'true');
-    expect(toggle().textContent).toContain('Liam Thompson only');
+    await renderAppAt('/inbox/all', () => !!document.querySelector('.ibx-msg'));
+    expect(patientIds().size).toBeGreaterThan(1);
+    expect(filter()).not.toBeNull();
+    expect(filter().textContent).toContain('All patients');
+
+    // The filter: one patient's records — chosen from the list, typed to find them.
+    filter().querySelector('.ant-select-selector')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    const option = () => [...document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')].find((o) => o.textContent?.includes('Liam Thompson')) as HTMLElement | undefined;
+    await waitUntil(() => !!option());
+    option()!.click();
+    await waitUntil(() => patientIds().size === 1);
     expect([...patientIds()]).toEqual([liam().id]);
 
-    // Still there with a record open.
-    (document.querySelector('.ibx-msg') as HTMLElement).click();
-    await waitUntil(() => !!openItemId());
-    expect(toggle()).not.toBeNull();
+    // Selecting someone else elsewhere does not move the filter.
+    store.dispatch(setCurrentPatient(null));
+    await wait(200);
+    expect([...patientIds()]).toEqual([liam().id]);
 
-    toggle().click();
-    await waitUntil(() => toggle().getAttribute('aria-pressed') === 'false');
-    expect(toggle().textContent).toContain('All patients');
+    // Cleared: every patient's again.
+    (filter().querySelector('.ant-select-clear') as HTMLElement | null)?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    (filter().querySelector('.ant-select-clear') as HTMLElement | null)?.click();
+    await waitUntil(() => patientIds().size > 1);
     expect(patientIds().size).toBeGreaterThan(1);
   }, TIMEOUT);
 
